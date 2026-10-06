@@ -104,7 +104,10 @@ export class FactoryScene extends Phaser.Scene {
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (w.inBounds(x + dx, y + dy) && w.ore[w.idx(x + dx, y + dy)]) n++;
         const rich = oreRichness(o.amount) * (n < 4 ? 0.45 : 1) + (hash2(x, y, w.seed + 6) - 0.5) * 0.35;
         const t = Math.max(0, Math.min(ORE_TIERS - 1, Math.round(rich * (ORE_TIERS - 1))));
-        const img = this.add.image((x + 0.5) * TILE, (y + 0.5) * TILE, `ore-${o.type}-${t}-${v}`).setDepth(1);
+        // Jitter positions so the per-tile stone clusters do not line up into rows.
+        const jx = (hash2(x, y, w.seed + 9) - 0.5) * TILE * 0.3;
+        const jy = (hash2(x, y, w.seed + 10) - 0.5) * TILE * 0.3;
+        const img = this.add.image((x + 0.5) * TILE + jx, (y + 0.5) * TILE + jy, `ore-${o.type}-${t}-${v}`).setDepth(1);
         img.setAngle((hash2(x, y, w.seed + 8) - 0.5) * 40);
         this.oreImages.set(k, img);
       }

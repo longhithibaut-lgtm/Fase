@@ -77,6 +77,8 @@ const PAL: Record<Exclude<Terrain, 'water'>, [RGB, RGB, RGB]> = {
   ],
 };
 const DEEP: RGB = [14, 36, 48];
+const LAND_SAT = 0.74;
+const LAND_VAL = 0.8;
 const SHALLOW: RGB = [38, 80, 86];
 
 /** Per-tile scalar field sampled bilinearly at tile centres. */
@@ -162,6 +164,8 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
 
   const nz = new Noise(seed * 7 + 1);
   const nz2 = new Noise(seed * 13 + 5);
+  const warpX = (x: number, y: number) => (nz.v(x * 0.7, y * 0.7) - 0.5) * 1.6 + (nz2.v(x * 2.3, y * 2.3) - 0.5) * 0.5;
+  const warpY = (x: number, y: number) => (nz.v(x * 0.7 + 91, y * 0.7 + 17) - 0.5) * 1.6 + (nz2.v(x * 2.3 + 5, y * 2.3 + 77) - 0.5) * 0.5;
 
   // Smoothed terrain weights.
   const weights = TERRAINS.map((t) => {
@@ -180,8 +184,8 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
         any = true;
       }
     }
-    return any ? { s: sampler(blur(blur(blur(f, tw, th), tw, th), tw, th), tw, th), c: ORE_PAL[type].stain } : null;
-  }).filter((v): v is { s: (x: number, y: number) => number; c: RGB } => !!v);
+    return any ? { s: sampler(blur(blur(f, tw, th), tw, th), tw, th), c: ORE_PAL[type].stain, mid: ORE_PAL[type].mid, light: ORE_PAL[type].light } : null;
+  }).filter((v): v is { s: (x: number, y: number) => number; c: RGB; mid: RGB; light: RGB } => !!v);
   const nz3 = new Noise(seed * 31 + 9);
   const shore = sampler(shoreDistance(world), tw, th);
   const [wG, wD, wS] = weights;
@@ -191,8 +195,8 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
     for (let x = 0; x < W; x++) {
       const tx0 = x / px;
       // Domain warp for organic borders.
-      const wx = (nz.v(tx0 * 0.7, ty0 * 0.7) - 0.5) * 1.6 + (nz2.v(tx0 * 2.3, ty0 * 2.3) - 0.5) * 0.5;
-      const wy = (nz.v(tx0 * 0.7 + 91, ty0 * 0.7 + 17) - 0.5) * 1.6 + (nz2.v(tx0 * 2.3 + 5, ty0 * 2.3 + 77) - 0.5) * 0.5;
+      const wx = warpX(tx0, ty0);
+      const wy = warpY(tx0, ty0);
       const tx = tx0 + wx;
       const ty = ty0 + wy;
 
@@ -259,16 +263,30 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
       const gb = hash2(x, y, seed + 11);
       if (kg > 0.4 && gb > 0.965) { gg *= 1.12; r *= 1.04; } else if (kg > 0.4 && gb < 0.03) k *= 0.85;
 
-      // Ore stain: tinted, darkened soil under patches, noise-eroded so it fades irregularly.
+      // Ore bed: dark, tinted soil under each patch with a defined darker rim just past the
+      // outer chunks, noise-eroded so the edge is ragged, plus loose ore grit inside.
       for (const st of stains) {
-        let v = st.s(tx0 + wx * 0.3, ty0 + wy * 0.3);
-        if (v < 0.02) continue;
-        v = v + (mid - 0.5) * 0.45 + (fine - 0.5) * 0.15;
-        v = v < 0 ? 0 : v > 1 ? 1 : v;
-        const a = v * v * (3 - 2 * v) * 0.75;
-        r += (st.c[0] - r) * a;
-        gg += (st.c[1] - gg) * a;
-        b += (st.c[2] - b) * a;
+        let v = st.s(tx0 + wx * 0.25, ty0 + wy * 0.25);
+        if (v < 0.04) continue;
+        v = v + (mid - 0.5) * 0.3 + (fine - 0.5) * 0.12;
+        const u = (v - 0.24) / 0.22;
+        const a = u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u);
+        if (a <= 0) continue;
+        r += (st.c[0] - r) * a * 0.85;
+        gg += (st.c[1] - gg) * a * 0.85;
+        b += (st.c[2] - b) * a * 0.85;
+        // Darker band at the bed's edge (v ~0.2..0.45), lighter churned soil in the core.
+        const rim = Math.max(0, 1 - Math.abs(v - 0.36) / 0.13);
+        k *= 1 - rim * 0.3 - a * 0.12;
+        if (v > 0.35 && grain > 0.9) {
+          const gr = hash2(x >> 1, y >> 1, seed + 41);
+          if (gr > 0.55) {
+            const oc = gr > 0.8 ? st.light : st.mid;
+            r = oc[0] * 0.9;
+            gg = oc[1] * 0.9;
+            b = oc[2] * 0.9;
+          }
+        }
       }
 
       // Shoreline.
@@ -294,15 +312,34 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
         gg = gg * (0.92 + 0.08 * t);
       }
 
+      r *= k;
+      gg *= k;
+      b *= k;
+      if (sd0 >= 0) {
+        // Land grade: ~25% less saturation and brightness so the ground sits behind the
+        // buildings and the painted decals carry the texture.
+        const l = r * 0.3 + gg * 0.59 + b * 0.11;
+        r = (l + (r - l) * LAND_SAT) * LAND_VAL;
+        gg = (l + (gg - l) * LAND_SAT) * LAND_VAL;
+        b = (l + (b - l) * LAND_SAT) * LAND_VAL;
+      }
       const o = (y * W + x) * 4;
-      d[o] = r * k;
-      d[o + 1] = gg * k;
-      d[o + 2] = b * k;
+      d[o] = r;
+      d[o + 1] = gg;
+      d[o + 2] = b;
       d[o + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
-  paintDecor(ctx, world, px, shore);
+  paintDecor(ctx, world, px, shore, (x, y) => {
+    // Same warped blend as the painted ground so clumps follow the visible grass edges.
+    const dry = Math.max(0, (nz.fbm(x * 0.18, y * 0.18, 3) - 0.52) * 2.2);
+    const g = wG(x + warpX(x, y), y + warpY(x, y)) * (1 - dry * 0.6);
+    const g3 = g * g * g;
+    const o = wD(x + warpX(x, y), y + warpY(x, y)) + g * dry * 0.6;
+    const k = g3 / Math.max(0.0001, g3 + o * o * o + 0.0001);
+    return { grass: k, dry };
+  });
   tex.refresh();
   tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
   return 'terrain';
@@ -345,8 +382,8 @@ function tuft(ctx: Ctx, x: number, y: number, s: number, seed: number, dryness: 
     const ang = -Math.PI / 2 + (hash2(seed, i, 5) - 0.5) * 2.2;
     const len = s * (0.6 + hash2(i, seed, 6) * 0.6);
     const light = hash2(seed, i, 8);
-    const g = 70 + light * 50;
-    ctx.strokeStyle = `rgba(${(g * 0.75 + dryness * 50) | 0},${(g * 0.82 + dryness * 20) | 0},${(28 + dryness * 10) | 0},0.85)`;
+    const g = 52 + light * 40;
+    ctx.strokeStyle = `rgba(${(g * 0.75 + dryness * 50) | 0},${(g * 0.82 + dryness * 20) | 0},${(24 + dryness * 8) | 0},0.7)`;
     ctx.lineWidth = 0.8 + light * 0.6;
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -409,7 +446,128 @@ function tree(ctx: Ctx, x: number, y: number, r: number, seed: number, tint: RGB
   ctx.fill();
 }
 
-function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: number) => number) {
+// Grass clump decals: small hand-painted sprites, drawn many times onto the terrain canvas.
+// Green clumps live in grass; dry straw clumps take over at grass edges and on dirt.
+const CLUMP_GREEN: RGB[] = [
+  [26, 34, 14],
+  [40, 52, 20],
+  [56, 70, 26],
+  [78, 90, 36],
+  [104, 104, 50],
+];
+const CLUMP_STRAW: RGB[] = [
+  [44, 36, 20],
+  [66, 54, 30],
+  [88, 74, 42],
+  [112, 94, 56],
+  [134, 114, 72],
+];
+
+interface Clump {
+  c: HTMLCanvasElement;
+  /** Anchor offset: draw at (x - o, y - o). */
+  o: number;
+}
+
+const mixRGB = (a: RGB, b: RGB, t: number): RGB => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+function clumpSprite(size: number, seed: number, pal: RGB[], blades: number): Clump {
+  const pad = 5;
+  const S = Math.ceil(size + pad * 2);
+  const c = document.createElement('canvas');
+  c.width = S;
+  c.height = S;
+  const ctx = c.getContext('2d')!;
+  const cx = S / 2;
+  const cy = S / 2;
+  const R = size / 2;
+  const h = (i: number, k: number) => hash2(seed, i, k);
+  // Soft shadow to the lower right.
+  ctx.save();
+  ctx.filter = 'blur(1.8px)';
+  ctx.fillStyle = 'rgba(6,8,2,0.5)';
+  ctx.beginPath();
+  ctx.ellipse(cx + R * 0.25, cy + R * 0.3, R * 0.78, R * 0.66, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  // Tapered blade from the clump centre outwards.
+  const blade = (a: number, len: number, w: number, col: RGB, edge: RGB, start: number) => {
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    const curl = (h(Math.round(a * 1000), 5) - 0.5) * 0.7;
+    const bx = cx + ca * start;
+    const by = cy + sa * start;
+    const tx = cx + Math.cos(a + curl * 0.35) * len;
+    const ty = cy + Math.sin(a + curl * 0.35) * len;
+    const mx = cx + Math.cos(a + curl * 0.12) * (start + (len - start) * 0.5);
+    const my = cy + Math.sin(a + curl * 0.12) * (start + (len - start) * 0.5);
+    const nx = -sa * w * 0.5;
+    const ny = ca * w * 0.5;
+    ctx.fillStyle = rgba(col);
+    ctx.beginPath();
+    ctx.moveTo(bx + nx, by + ny);
+    ctx.quadraticCurveTo(mx + nx * 0.7, my + ny * 0.7, tx, ty);
+    ctx.quadraticCurveTo(mx - nx * 0.7, my - ny * 0.7, bx - nx, by - ny);
+    ctx.closePath();
+    ctx.fill();
+    // Lit rim on the side facing the upper-left light.
+    const side = -nx - ny > 0 ? 1 : -1;
+    ctx.strokeStyle = rgba(edge, 0.7);
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(bx + nx * side * 0.8, by + ny * side * 0.8);
+    ctx.quadraticCurveTo(mx + nx * 0.6 * side, my + ny * 0.6 * side, tx, ty);
+    ctx.stroke();
+  };
+  const litOf = (a: number) => (-Math.cos(a) - Math.sin(a)) / Math.SQRT2; // -1..1
+  // Outer ring of long blades, shaded by facing, back ones first.
+  const outer: { a: number; t: number }[] = [];
+  for (let i = 0; i < blades; i++) {
+    const a = (i / blades) * Math.PI * 2 + (h(i, 1) - 0.5) * 0.9;
+    outer.push({ a, t: litOf(a) + (h(i, 4) - 0.5) * 0.6 });
+  }
+  outer.sort((p, q) => p.t - q.t);
+  for (const { a, t } of outer) {
+    const i = Math.round(a * 100);
+    const shade = Math.max(0, Math.min(1, t * 0.5 + 0.5));
+    const col = mixRGB(pal[1], pal[3], shade);
+    // Mixed lengths so the outline is ragged rather than a star.
+    const len = h(i, 2) < 0.4 ? 0.45 + h(i, 6) * 0.2 : 0.72 + h(i, 6) * 0.3;
+    blade(a, R * len, 1.8 + h(i, 3) * 1.4 + size * 0.06, col, mixRGB(pal[3], pal[4], shade), R * 0.1);
+  }
+  // Dense mound in the middle: overlapping lobes, dark below, lighter on top-left.
+  const lobes = 5 + Math.floor(h(0, 11) * 3);
+  for (let pass = 0; pass < 3; pass++) {
+    const col = [pal[0], pal[1], pal[2]][pass];
+    for (let i = 0; i < lobes; i++) {
+      const a = (i / lobes) * Math.PI * 2 + h(i, 12);
+      const rr = R * 0.22 * h(i, 13);
+      const off = pass * R * 0.1;
+      ctx.fillStyle = rgba(col, pass === 0 ? 1 : 0.9);
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * rr - off, cy + Math.sin(a) * rr - off, R * (0.36 - pass * 0.09) * (0.8 + h(i, 14) * 0.4), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  // Short lit blades springing from the mound towards the light.
+  const inner = Math.max(2, Math.round(blades * 0.45));
+  for (let i = 0; i < inner; i++) {
+    const a = -Math.PI * 0.75 + (h(i, 15) - 0.5) * 2.6;
+    const t = Math.max(0, litOf(a));
+    blade(a, R * (0.45 + h(i, 16) * 0.3), 1.3 + h(i, 17) * 0.9, mixRGB(pal[2], pal[4], t * 0.8), pal[4], 0);
+  }
+  return { c, o: S / 2 };
+}
+
+function clumpSet(): { green: Clump[]; straw: Clump[] } {
+  const green: Clump[] = [];
+  const straw: Clump[] = [];
+  for (let i = 0; i < 10; i++) green.push(clumpSprite(10 + (i / 9) * 13 + hash2(i, 3, 91) * 2, 500 + i * 17, CLUMP_GREEN, 5 + ((i * 7) % 11)));
+  for (let i = 0; i < 6; i++) straw.push(clumpSprite(9 + (i / 5) * 12, 900 + i * 23, CLUMP_STRAW, 6 + ((i * 5) % 9)));
+  return { green, straw };
+}
+
+function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: number) => number, grassAt: (x: number, y: number) => { grass: number; dry: number }) {
   const { width: tw, height: th, seed } = world;
   const rnd = mulberry32(seed * 31 + 9);
   const nz = new Noise(seed * 3 + 11);
@@ -427,24 +585,50 @@ function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: nu
   };
   const area = tw * th;
 
-  // Grass tufts.
-  for (let i = 0; i < area * 5; i++) {
+  // Grass clumps: 1-3 per grass tile, clustered by a second noise into thick and bare
+  // patches; straw variants at grass edges and in dry spots, fading out on dirt.
+  const set = clumpSet();
+  const cl = new Noise(seed * 5 + 23);
+  for (let i = 0; i < area * 9; i++) {
+    const x = rnd() * tw;
+    const y = rnd() * th;
+    const t = at(x, y);
+    if (t === 'water' || shore(x, y) < 0.35 || nearOre(x, y)) continue;
+    const g = grassAt(x, y);
+    // Cluster field: broad patches times finer clumping.
+    const c1 = cl.fbm(x * 0.13, y * 0.13, 2);
+    const c2 = cl.v(x * 0.7 + 50, y * 0.7 - 20);
+    let dens = Math.min(1.4, Math.max(0, (c1 - 0.3) * 3.4) * (0.35 + c2 * 1.1));
+    dens *= 0.22 + g.grass * 0.85;
+    if (rnd() > dens * 0.6) continue;
+    const dryEdge = 1 - g.grass + g.dry * 0.8;
+    const useStraw = rnd() < Math.min(0.95, dryEdge * 0.9 - 0.05);
+    const arr = useStraw ? set.straw : set.green;
+    // Bigger clumps in the thickest spots.
+    const big = Math.min(arr.length - 1, Math.floor(rnd() * arr.length * (0.55 + dens * 0.45)));
+    const sp = arr[big];
+    ctx.globalAlpha = useStraw ? 0.75 + g.grass * 0.25 : 1;
+    ctx.drawImage(sp.c, Math.round(x * px - sp.o), Math.round(y * px - sp.o));
+  }
+  ctx.globalAlpha = 1;
+  // Fine single blades between clumps, mostly on grass.
+  for (let i = 0; i < area * 2; i++) {
     const x = rnd() * tw;
     const y = rnd() * th;
     const t = at(x, y);
     if (t === 'water' || shore(x, y) < 0.3) continue;
-    const dens = nz.v(x * 0.25, y * 0.25);
-    if (t === 'grass' ? rnd() > dens * 1.4 : rnd() > 0.12) continue;
-    tuft(ctx, x * px, y * px, px * (0.12 + rnd() * 0.14), i, t === 'grass' ? nz.v(x * 0.1 + 50, y * 0.1) : 0.8);
+    const g = grassAt(x, y);
+    if (rnd() > 0.15 + g.grass * 0.5) continue;
+    tuft(ctx, x * px, y * px, px * (0.08 + rnd() * 0.08), i, Math.min(1, 1 - g.grass + g.dry));
   }
   // Pebbles and small stones.
-  for (let i = 0; i < area * 1.2; i++) {
+  for (let i = 0; i < area * 0.8; i++) {
     const x = rnd() * tw;
     const y = rnd() * th;
     const t = at(x, y);
     if (t === 'water' || shore(x, y) < 0.15) continue;
     if (t === 'grass' && rnd() > 0.35) continue;
-    const base: RGB = t === 'sand' ? [150, 130, 100] : [116, 104, 88];
+    const base: RGB = t === 'sand' ? [120, 104, 80] : [88, 80, 68];
     const r = px * (0.04 + rnd() * 0.06);
     rock(ctx, x * px, y * px, r, i, base);
   }
@@ -454,8 +638,8 @@ function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: nu
     const y = rnd() * th;
     if (at(x, y) === 'water' || shore(x, y) < 1 || Math.hypot(x - cx, y - cy) < 16 || nearOre(x, y)) continue;
     const r = px * (0.25 + rnd() * 0.3);
-    rock(ctx, x * px, y * px, r, i + 999, [110, 100, 86]);
-    for (let j = 0; j < 3; j++) rock(ctx, (x + (rnd() - 0.5) * 1.2) * px, (y + (rnd() - 0.5) * 1.2) * px, r * (0.2 + rnd() * 0.3), i * 7 + j, [110, 100, 86]);
+    rock(ctx, x * px, y * px, r, i + 999, [96, 88, 76]);
+    for (let j = 0; j < 3; j++) rock(ctx, (x + (rnd() - 0.5) * 1.2) * px, (y + (rnd() - 0.5) * 1.2) * px, r * (0.2 + rnd() * 0.3), i * 7 + j, [96, 88, 76]);
   }
   // Bushes and trees clustered into groves.
   const greens: RGB[] = [
@@ -557,31 +741,37 @@ export function makeOre(scene: Phaser.Scene) {
       for (let v = 0; v < ORE_VARIANTS; v++) {
         const [ctx, tex] = canvas(scene, `ore-${ore}-${t}-${v}`, S, S);
         const sd = v * 97 + t * 1013 + ore.length * 13;
-        // Loose grit around the stones.
-        const grit = 10 + rich * 30;
+        // Loose grit between the stones.
+        const grit = 30 + rich * 40;
         for (let i = 0; i < grit; i++) {
           const a = hash2(i, sd, 51) * Math.PI * 2;
-          const rr = Math.sqrt(hash2(sd, i, 52)) * (24 + rich * 8);
-          ctx.fillStyle = rgba(hash2(i, sd, 53) > 0.5 ? p.mid : p.dark, 0.55 + hash2(i, sd, 57) * 0.4);
-          const z = 1 + hash2(i, sd, 58) * 1.5;
+          const rr = Math.sqrt(hash2(sd, i, 52)) * 36;
+          ctx.fillStyle = rgba(hash2(i, sd, 53) > 0.5 ? p.mid : p.dark, 0.6 + hash2(i, sd, 57) * 0.4);
+          const z = 1 + hash2(i, sd, 58) * 2;
           ctx.fillRect(c + Math.cos(a) * rr, c + Math.sin(a) * rr, z, z);
         }
-        // Chunks: a few big clumped stones at the core, sparse pebbles at the edge.
+        // Stones packed over the whole tile so neighbours merge into one solid deposit:
+        // big overlapping chunks, medium fillers, then small pebbles filling the gaps.
         const list: [number, number, number][] = [];
-        const big = t === 0 ? 0 : t === 1 ? 1 : t === 2 ? 3 : 5;
-        const small = [3, 6, 9, 13][t];
-        // Clump centre, offset so stones are not centred on the tile grid.
-        const cx = c + (hash2(sd, 1, 60) - 0.5) * 16;
-        const cy = c + (hash2(sd, 2, 60) - 0.5) * 16;
+        const big = [2, 3, 4, 5][t];
+        const medium = [5, 6, 7, 8][t];
+        const small = [10, 12, 14, 16][t];
+        const jx = (hash2(sd, 1, 60) - 0.5) * 18;
+        const jy = (hash2(sd, 2, 60) - 0.5) * 18;
         for (let i = 0; i < big; i++) {
-          const a = hash2(i, sd, 61) * Math.PI * 2;
-          const rr = 3 + hash2(sd, i, 62) * (8 + t * 2);
-          list.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, 9 + hash2(i, sd, 63) * (4 + rich * 5)]);
+          const a = (i / big) * Math.PI * 2 + hash2(i, sd, 61) * 1.2;
+          const rr = 6 + hash2(sd, i, 62) * 16;
+          list.push([c + jx + Math.cos(a) * rr, c + jy + Math.sin(a) * rr, 11 + hash2(i, sd, 63) * (4 + rich * 5)]);
+        }
+        for (let i = 0; i < medium; i++) {
+          const a = hash2(i, sd, 67) * Math.PI * 2;
+          const rr = 10 + hash2(sd, i, 68) * 20;
+          list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, 6 + hash2(i, sd, 69) * 4]);
         }
         for (let i = 0; i < small; i++) {
           const a = hash2(i, sd, 64) * Math.PI * 2;
-          const rr = Math.sqrt(hash2(sd, i, 65)) * (26 + rich * 6);
-          list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, 2.5 + hash2(i, sd, 66) * (2.5 + rich * 3.5)]);
+          const rr = Math.sqrt(hash2(sd, i, 65)) * 36;
+          list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, 2.5 + hash2(i, sd, 66) * 3]);
         }
         list.sort((a, b) => a[1] - b[1]);
         // Soft contact shadows first, then the stones.
