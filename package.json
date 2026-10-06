@@ -1,0 +1,35 @@
+{
+  "name": "fase",
+  "version": "1.0.0",
+  "description": "Skill de [RoboNuggets](https://github.com/robonuggets/gauntlet-loop) installé dans `.claude/skills/gauntlet-loop/`. Il transforme un objectif en un prompt court (~150 mots) qui oblige l'agent à se fixer une référence de qualité réelle, à découper le travail, à faire tourner des paires constructeur / critique sévère, à comparer à l'aveugle avec la référence, et à boucler jusqu'à ce que le résultat gagne.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc",
+    "shot": "node scripts/shot.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/longhithibaut-lgtm/Fase.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/longhithibaut-lgtm/Fase/issues"
+  },
+  "homepage": "https://github.com/longhithibaut-lgtm/Fase#readme",
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3",
+    "vitest": "^5.0.3"
+  },
+  "private": true,
+  "type": "module"
+}
