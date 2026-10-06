@@ -3,7 +3,8 @@ import type { Campaign, CampaignEvent } from '../sim/campaign';
 import { BELT_SPEED, BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/world';
 import { Hud } from './hud';
-import { BELT_FRAMES, CLIFF, TILE, makeShared, makeSite } from './textures';
+import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, makePod, makeSite } from './site';
+import { BELT_FRAMES, TILE, makeShared } from './textures';
 
 const STEP = 1 / 60;
 /** Room kept free around the plot for the HUD, in screen pixels. */
@@ -33,12 +34,20 @@ export class FactoryScene extends Phaser.Scene {
   private ghostArrow!: Phaser.GameObjects.Image;
   private cursor!: Phaser.GameObjects.Rectangle;
   private selBox!: Phaser.GameObjects.Rectangle;
-  private cable!: Phaser.GameObjects.Graphics;
+  private vignette!: Phaser.GameObjects.Image;
+  private grid!: Phaser.GameObjects.Image;
+  private cable!: Phaser.GameObjects.TileSprite;
+  private cablePulse!: Phaser.GameObjects.TileSprite;
+  private cableCollar!: Phaser.GameObjects.Image;
+  private cableGlow!: Phaser.GameObjects.Image;
   private hover = { x: -1, y: -1 };
   private dragLast: { x: number; y: number } | null = null;
   private panning: { x: number; y: number; sx: number; sy: number } | null = null;
   private fitZoom = 1;
   private shownSite = '';
+  /** Interior acid tiles of the shown site, where bubbles rise. */
+  private acidTiles: [number, number][] = [];
+  private nextBubble = 0;
 
   constructor(private getCampaign: () => Campaign) {
     super('factory');
@@ -51,12 +60,21 @@ export class FactoryScene extends Phaser.Scene {
   create() {
     this.campaign = this.getCampaign();
     makeShared(this);
-    this.backdrop = this.add.image(0, 0, 'backdrop').setOrigin(0).setScrollFactor(0).setDepth(-10);
+    makeBackdrop(this);
+    makeCable(this);
+    makePod(this);
+    makeAcidBubble(this);
+    this.backdrop = this.add.image(0, 0, 'backdrop').setScrollFactor(0).setDepth(-10);
+    this.vignette = this.add.image(0, 0, 'vignette').setScrollFactor(0).setDepth(40);
+    this.grid = this.add.image(0, 0, 'px').setOrigin(0).setDepth(1).setAlpha(0);
     this.ghost = this.add.image(0, 0, 'px').setDepth(50).setAlpha(0.6).setVisible(false);
     this.ghostArrow = this.add.image(0, 0, 'arrow').setDepth(51).setVisible(false);
     this.cursor = this.add.rectangle(0, 0, TILE, TILE).setStrokeStyle(3, 0xf2b632, 0.95).setDepth(49).setVisible(false);
     this.selBox = this.add.rectangle(0, 0, TILE, TILE).setStrokeStyle(4, 0x4fd1bd, 1).setDepth(49).setVisible(false);
-    this.cable = this.add.graphics().setDepth(8);
+    this.cableGlow = this.add.image(0, 0, 'fire').setDepth(7.9).setBlendMode(Phaser.BlendModes.ADD).setTint(0x4fd1bd);
+    this.cable = this.add.tileSprite(0, 0, CABLE_W, 3200, 'cable').setOrigin(0.5, 1).setDepth(8);
+    this.cablePulse = this.add.tileSprite(0, 0, CABLE_W, 3200, 'cable-pulse').setOrigin(0.5, 1).setDepth(8.1).setBlendMode(Phaser.BlendModes.ADD);
+    this.cableCollar = this.add.image(0, 0, 'cable-collar').setDepth(8.2);
     this.hud = new Hud(this);
     this.showSite(this.campaign.current);
 
@@ -72,6 +90,7 @@ export class FactoryScene extends Phaser.Scene {
       const cam = this.cameras.main;
       const before = cam.getWorldPoint(p.x, p.y);
       cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), this.fitZoom * 0.8, this.fitZoom * 2.2));
+      this.fitScreenLayers();
       const after = cam.getWorldPoint(p.x, p.y);
       cam.scrollX += before.x - after.x;
       cam.scrollY += before.y - after.y;
@@ -90,8 +109,14 @@ export class FactoryScene extends Phaser.Scene {
     this.setTool(null);
     const key = `site-${id}`;
     if (!this.textures.exists(key)) makeSite(this, this.world, key);
-    this.siteLayer.push(this.add.image(0, 0, key).setOrigin(0).setDepth(0));
+    this.siteLayer.push(this.add.image(-SITE_PAD, -SITE_PAD, key).setOrigin(0).setDepth(0));
+    this.grid.setTexture(`${key}-grid`).setAlpha(0);
     this.shownSite = id;
+    const w = this.world;
+    const acid = (x: number, y: number) => w.inBounds(x, y) && w.terrain[w.idx(x, y)] === 'acid';
+    this.acidTiles = [];
+    for (let y = 0; y < w.height; y++)
+      for (let x = 0; x < w.width; x++) if (acid(x, y) && (acid(x - 1, y) || acid(x + 1, y)) && (acid(x, y - 1) || acid(x, y + 1))) this.acidTiles.push([x, y]);
     this.fitCamera();
     this.hud.refreshSites();
   }
@@ -109,11 +134,20 @@ export class FactoryScene extends Phaser.Scene {
     const vw = this.scale.width;
     const vh = this.scale.height;
     const w = this.world.width * TILE;
-    const h = this.world.height * TILE + CLIFF;
+    const h = this.world.height * TILE + CLIFF_FIT;
     this.fitZoom = Math.min((vw - MARGIN.side * 2) / w, (vh - MARGIN.top - MARGIN.bottom) / h);
     cam.setZoom(this.fitZoom);
     cam.centerOn(w / 2, h / 2 - (MARGIN.top - MARGIN.bottom) / 2 / this.fitZoom);
-    this.backdrop.setScale(Math.max(vw / this.backdrop.width, vh / this.backdrop.height));
+    this.fitScreenLayers();
+  }
+
+  /** Screen-space layers: scroll factor 0 still scales with camera zoom, so undo the zoom. */
+  private fitScreenLayers() {
+    const vw = this.scale.width;
+    const vh = this.scale.height;
+    const z = this.cameras.main.zoom;
+    this.backdrop.setPosition(vw / 2, vh / 2).setScale(Math.max(vw / this.backdrop.width, vh / this.backdrop.height) / z);
+    this.vignette.setPosition(vw / 2, vh / 2).setDisplaySize(vw / z, vh / z);
   }
 
   // ---------- input ----------
@@ -207,6 +241,10 @@ export class FactoryScene extends Phaser.Scene {
 
   setTool(kind: BuildingKind | null) {
     this.tool = kind;
+    if (this.grid) {
+      this.tweens.killTweensOf(this.grid);
+      this.tweens.add({ targets: this.grid, alpha: kind ? 1 : 0, duration: 160 });
+    }
     if (kind) this.select(null);
     this.hud?.refreshToolbar();
   }
@@ -232,6 +270,7 @@ export class FactoryScene extends Phaser.Scene {
     this.syncEntities(time);
     this.drawItems();
     this.drawCable(time);
+    this.bubbleAcid(time);
     this.drawCursor();
     this.hud.update(time);
   }
@@ -246,27 +285,45 @@ export class FactoryScene extends Phaser.Scene {
     return null;
   }
 
-  /** The orbital cable, rising from the elevator out of the top of the screen. */
+  /** The orbital cable, rising from the elevator hub out of the top of the screen; light pulses climb it. */
   private drawCable(time: number) {
-    const g = this.cable;
-    g.clear();
     const c = this.elevatorCenter();
+    const on = !!c;
+    for (const o of [this.cable, this.cablePulse, this.cableCollar, this.cableGlow]) o.setVisible(on);
     if (!c) return;
-    const top = this.cameras.main.worldView.y - 40;
-    g.lineStyle(14, 0x1c1411, 1);
-    g.lineBetween(c[0], c[1], c[0], top);
-    g.lineStyle(6, 0x9aa6b0, 1);
-    g.lineBetween(c[0], c[1], c[0], top);
-    g.lineStyle(2, 0x4fd1bd, 0.5 + Math.sin(time / 200) * 0.3);
-    g.lineBetween(c[0] + 2, c[1], c[0] + 2, top);
+    const [x, y] = c;
+    this.cable.setPosition(x, y - 4).tilePositionY = 0;
+    this.cablePulse.setPosition(x, y - 4);
+    this.cablePulse.tilePositionY = (time / 1000) * 260;
+    this.cableCollar.setPosition(x, y - 2);
+    this.cableGlow.setPosition(x, y - 4).setScale(1.3, 1).setAlpha(0.22 + Math.sin(time / 260) * 0.08);
+  }
+
+  /** Slow bubbles swelling and popping on the acid pools. */
+  private bubbleAcid(time: number) {
+    if (time < this.nextBubble || !this.acidTiles.length) return;
+    this.nextBubble = time + 260 + Math.random() * 420;
+    const [tx, ty] = this.acidTiles[Math.floor(Math.random() * this.acidTiles.length)];
+    const b = this.add
+      .image((tx + 0.5) * TILE + (Math.random() - 0.5) * 30, (ty + 0.5) * TILE + (Math.random() - 0.5) * 24, 'acid-bubble')
+      .setDepth(1.5)
+      .setScale(0.2);
+    const s = 0.6 + Math.random() * 0.7;
+    this.tweens.add({
+      targets: b,
+      scale: s,
+      duration: 900 + Math.random() * 600,
+      ease: 'Sine.easeOut',
+      onComplete: () => this.tweens.add({ targets: b, scale: s * 1.4, alpha: 0, duration: 120, onComplete: () => b.destroy() }),
+    });
   }
 
   /** A cargo pod climbing the cable after each shipment. */
   private launchPod(item: ItemId) {
     const c = this.elevatorCenter();
     if (!c) return;
-    const pod = this.add.container(c[0], c[1]).setDepth(9);
-    pod.add([this.add.rectangle(0, 0, 26, 30, 0xf2b632).setStrokeStyle(4, 0x1c1411), this.add.image(0, 0, `item-${item}`).setScale(0.75)]);
+    const pod = this.add.container(c[0], c[1] - 10).setDepth(9);
+    pod.add([this.add.image(0, 0, 'cable-pod'), this.add.image(0, -2, `item-${item}`).setScale(0.62)]);
     this.tweens.add({
       targets: pod,
       y: this.cameras.main.worldView.y - 80,

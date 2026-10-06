@@ -4,12 +4,9 @@
 import Phaser from 'phaser';
 import { ITEMS, type ItemId } from '../sim/defs';
 import { hash2, mulberry32 } from '../sim/rng';
-import type { World } from '../sim/world';
 
 export const TILE = 64;
 export const BELT_FRAMES = 16;
-/** Pixels of cliff drawn below the plot. */
-export const CLIFF = 56;
 
 export const INK = '#1c1411';
 export const PALETTE = {
@@ -25,10 +22,10 @@ export const PALETTE = {
   sky: 0x2a1b33,
 };
 
-type Ctx = CanvasRenderingContext2D;
+export type Ctx = CanvasRenderingContext2D;
 type PathFn = (ctx: Ctx, ox: number, oy: number) => void;
 
-function canvas(scene: Phaser.Scene, key: string, w: number, h: number): [Ctx, Phaser.Textures.CanvasTexture] {
+export function canvas(scene: Phaser.Scene, key: string, w: number, h: number): [Ctx, Phaser.Textures.CanvasTexture] {
   if (scene.textures.exists(key)) scene.textures.remove(key);
   const tex = scene.textures.createCanvas(key, w, h)!;
   return [tex.getContext(), tex];
@@ -54,7 +51,7 @@ export function css(hex: number, f = 0, a = 1): string {
  * Cel-shaded inked shape: dark base, hatching, lit fill shifted toward the top-left light
  * (leaving a shadow band on the lower-right), rim light, then a thick ink outline.
  */
-function cel(ctx: Ctx, path: PathFn, base: number, opts: { k?: number; lw?: number; hatch?: boolean; drop?: number } = {}) {
+export function cel(ctx: Ctx, path: PathFn, base: number, opts: { k?: number; lw?: number; hatch?: boolean; drop?: number } = {}) {
   const k = opts.k ?? 6;
   const lw = opts.lw ?? 4;
   const drop = opts.drop ?? 6;
@@ -103,18 +100,18 @@ function cel(ctx: Ctx, path: PathFn, base: number, opts: { k?: number; lw?: numb
   ctx.stroke();
 }
 
-function rrect(x: number, y: number, w: number, h: number, r: number): PathFn {
+export function rrect(x: number, y: number, w: number, h: number, r: number): PathFn {
   return (ctx, ox, oy) => ctx.roundRect(x + ox, y + oy, w, h, r);
 }
 
-function circle(x: number, y: number, r: number): PathFn {
+export function circle(x: number, y: number, r: number): PathFn {
   return (ctx, ox, oy) => {
     ctx.moveTo(x + ox + r, y + oy);
     ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
   };
 }
 
-function poly(pts: [number, number][]): PathFn {
+export function poly(pts: [number, number][]): PathFn {
   return (ctx, ox, oy) => {
     ctx.moveTo(pts[0][0] + ox, pts[0][1] + oy);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] + ox, pts[i][1] + oy);
@@ -123,7 +120,7 @@ function poly(pts: [number, number][]): PathFn {
 }
 
 /** Irregular rock/crystal polygon. */
-function blob(x: number, y: number, r: number, seed: number, sides = 7, squash = 0.8): [number, number][] {
+export function blob(x: number, y: number, r: number, seed: number, sides = 7, squash = 0.8): [number, number][] {
   const pts: [number, number][] = [];
   for (let i = 0; i < sides; i++) {
     const a = (i / sides) * Math.PI * 2 + hash2(i, seed, 3) * 0.4;
@@ -134,7 +131,7 @@ function blob(x: number, y: number, r: number, seed: number, sides = 7, squash =
 }
 
 /** Scratches and dirt specks, clipped by the caller. */
-function grime(ctx: Ctx, x: number, y: number, w: number, h: number, seed: number, n = 14) {
+export function grime(ctx: Ctx, x: number, y: number, w: number, h: number, seed: number, n = 14) {
   const rng = mulberry32(seed);
   for (let i = 0; i < n; i++) {
     const px = x + rng() * w;
@@ -155,7 +152,7 @@ function grime(ctx: Ctx, x: number, y: number, w: number, h: number, seed: numbe
   }
 }
 
-function hazardBand(ctx: Ctx, x: number, y: number, w: number, h: number) {
+export function hazardBand(ctx: Ctx, x: number, y: number, w: number, h: number) {
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, w, h);
@@ -177,7 +174,7 @@ function hazardBand(ctx: Ctx, x: number, y: number, w: number, h: number) {
   ctx.strokeRect(x, y, w, h);
 }
 
-function bolt(ctx: Ctx, x: number, y: number) {
+export function bolt(ctx: Ctx, x: number, y: number) {
   ctx.fillStyle = css(PALETTE.steel, 0.3);
   ctx.strokeStyle = INK;
   ctx.lineWidth = 2;
@@ -185,269 +182,6 @@ function bolt(ctx: Ctx, x: number, y: number) {
   ctx.arc(x, y, 3.2, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-}
-
-// ---------- site terrain ----------
-
-const ORE_LOOK: Record<string, { base: number; stain: string; crystal: boolean }> = {
-  'ferrite-ore': { base: 0xb5532e, stain: 'rgba(120,40,20,0.35)', crystal: false },
-  'cuprite-ore': { base: 0x35b8a6, stain: 'rgba(30,110,100,0.32)', crystal: true },
-  carbon: { base: 0x34303a, stain: 'rgba(30,24,30,0.4)', crystal: false },
-  silica: { base: 0xbfe6f0, stain: 'rgba(200,235,240,0.35)', crystal: true },
-};
-
-/** Paints a whole site: plot ground, ore deposits, rocks, acid pools, plot edge and cliff face. */
-export function makeSite(scene: Phaser.Scene, world: World, key: string) {
-  const W = world.width * TILE;
-  const H = world.height * TILE;
-  const [ctx, tex] = canvas(scene, key, W, H + CLIFF);
-  const seed = (world.level?.id ?? 'x').split('').reduce((a, c) => a * 31 + c.charCodeAt(0), 7) >>> 0;
-  const blocked = (x: number, y: number) => !world.inBounds(x, y) || world.terrain[world.idx(x, y)] !== 'ground';
-
-  // Plot outline: ground tiles plus a little bevel. Everything outside stays transparent.
-  const plot = new Path2D();
-  plot.roundRect(6, 6, W - 12, H - 12, 22);
-
-  // Cliff face below the plot.
-  ctx.save();
-  const cg = ctx.createLinearGradient(0, H - 20, 0, H + CLIFF);
-  cg.addColorStop(0, css(PALETTE.groundDark, -0.35));
-  cg.addColorStop(1, css(PALETTE.groundDark, -0.7));
-  ctx.fillStyle = cg;
-  ctx.beginPath();
-  ctx.moveTo(10, H - 30);
-  for (let x = 10; x <= W - 10; x += 16) ctx.lineTo(x, H + CLIFF - 10 - hash2(x, 1, seed) * 22);
-  ctx.lineTo(W - 10, H - 30);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(28,20,17,0.6)';
-  ctx.lineWidth = 2;
-  for (let i = 0; i < 4; i++) {
-    ctx.beginPath();
-    for (let x = 14; x < W - 14; x += 12) ctx.lineTo(x, H + 4 + i * 11 + Math.sin(x / 40 + i) * 3);
-    ctx.stroke();
-  }
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = INK;
-  ctx.beginPath();
-  ctx.moveTo(10, H - 30);
-  for (let x = 10; x <= W - 10; x += 16) ctx.lineTo(x, H + CLIFF - 10 - hash2(x, 1, seed) * 22);
-  ctx.lineTo(W - 10, H - 30);
-  ctx.stroke();
-  ctx.restore();
-
-  // Ground: three posterised tones from blotchy noise, the comic way.
-  ctx.save();
-  ctx.clip(plot);
-  ctx.fillStyle = css(PALETTE.ground);
-  ctx.fillRect(0, 0, W, H);
-  const rng = mulberry32(seed);
-  for (let i = 0; i < world.width * world.height * 0.5; i++) {
-    const x = rng() * W;
-    const y = rng() * H;
-    const r = 18 + rng() * 46;
-    const dark = rng() < 0.55;
-    ctx.fillStyle = css(dark ? PALETTE.groundDark : PALETTE.groundLight, 0, 0.55);
-    ctx.beginPath();
-    for (const [px, py] of blob(x, y, r, i + seed, 9, 0.6)) ctx.lineTo(px, py);
-    ctx.closePath();
-    ctx.fill();
-  }
-  // Cracks: thin inked random walks.
-  ctx.strokeStyle = 'rgba(40,22,12,0.55)';
-  ctx.lineCap = 'round';
-  for (let i = 0; i < world.width * 1.4; i++) {
-    let x = rng() * W;
-    let y = rng() * H;
-    ctx.lineWidth = 1.5 + rng() * 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    const n = 3 + Math.floor(rng() * 5);
-    for (let s = 0; s < n; s++) {
-      x += (rng() - 0.5) * 34;
-      y += (rng() - 0.5) * 20;
-      ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-  // Pebbles.
-  for (let i = 0; i < world.width * world.height * 0.35; i++) {
-    const x = rng() * W;
-    const y = rng() * H;
-    const tx = Math.floor(x / TILE);
-    const ty = Math.floor(y / TILE);
-    if (blocked(tx, ty) || world.ore[world.idx(tx, ty)]) continue;
-    cel(ctx, poly(blob(x, y, 2.5 + rng() * 4, i, 6)), PALETTE.groundDark, { k: 2, lw: 1.6, hatch: false, drop: 2 });
-  }
-  // Ore deposits: stained ground, then cel-shaded chunks or crystals.
-  for (let y = 0; y < world.height; y++)
-    for (let x = 0; x < world.width; x++) {
-      const o = world.ore[world.idx(x, y)];
-      if (!o) continue;
-      const look = ORE_LOOK[o.type];
-      ctx.fillStyle = look.stain;
-      ctx.beginPath();
-      for (const [px, py] of blob((x + 0.5) * TILE, (y + 0.5) * TILE, TILE * 0.85, x * 13 + y, 10, 0.85)) ctx.lineTo(px, py);
-      ctx.closePath();
-      ctx.fill();
-    }
-  for (let y = 0; y < world.height; y++)
-    for (let x = 0; x < world.width; x++) {
-      const o = world.ore[world.idx(x, y)];
-      if (!o) continue;
-      const look = ORE_LOOK[o.type];
-      const n = 3 + Math.floor(hash2(x, y, seed) * 3);
-      for (let i = 0; i < n; i++) {
-        const cx = (x + 0.2 + hash2(x * 7 + i, y, seed + 1) * 0.6) * TILE;
-        const cy = (y + 0.2 + hash2(x, y * 7 + i, seed + 2) * 0.6) * TILE;
-        const r = 7 + hash2(i, x + y, seed + 3) * 8;
-        if (look.crystal) {
-          const h = r * 2.2;
-          const lean = (hash2(i, x, seed) - 0.5) * 8;
-          cel(ctx, poly([[cx - r * 0.5, cy + r * 0.4], [cx + lean, cy - h], [cx + r * 0.5, cy + r * 0.4]]), look.base, { k: 3, lw: 2.5, drop: 4 });
-        } else {
-          cel(ctx, poly(blob(cx, cy, r, x * 31 + y * 7 + i, 6)), look.base, { k: 3, lw: 2.5, drop: 4 });
-        }
-      }
-    }
-  // Blocked tiles: acid pools and rock formations.
-  for (let y = 0; y < world.height; y++)
-    for (let x = 0; x < world.width; x++) {
-      const t = world.terrain[world.idx(x, y)];
-      const cx = (x + 0.5) * TILE;
-      const cy = (y + 0.5) * TILE;
-      if (t === 'acid') {
-        ctx.fillStyle = css(0x2d4a12);
-        ctx.beginPath();
-        for (const [px, py] of blob(cx, cy + 3, TILE * 0.66, x * 5 + y, 10, 0.85)) ctx.lineTo(px, py);
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
-  for (let y = 0; y < world.height; y++)
-    for (let x = 0; x < world.width; x++) {
-      if (world.terrain[world.idx(x, y)] !== 'acid') continue;
-      const cx = (x + 0.5) * TILE;
-      const cy = (y + 0.5) * TILE;
-      ctx.fillStyle = css(PALETTE.acid);
-      ctx.beginPath();
-      for (const [px, py] of blob(cx, cy, TILE * 0.58, x * 5 + y, 10, 0.85)) ctx.lineTo(px, py);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = css(PALETTE.acid, 0.45);
-      ctx.beginPath();
-      ctx.ellipse(cx - 8, cy - 8, 12, 5, -0.3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  // Ink around each acid pool group: stroke the union by drawing each pool's outline under the next fill.
-  for (let y = 0; y < world.height; y++)
-    for (let x = 0; x < world.width; x++) {
-      if (world.terrain[world.idx(x, y)] !== 'rock') continue;
-      const cx = (x + 0.5) * TILE;
-      const cy = (y + 0.5) * TILE;
-      cel(ctx, poly(blob(cx, cy, TILE * 0.55, x * 17 + y * 3, 8, 0.9)), PALETTE.rock, { k: 8, lw: 4, drop: 8 });
-      cel(ctx, poly(blob(cx + 10, cy - 12, TILE * 0.28, x * 3 + y * 17, 6, 0.9)), PALETTE.rock, { k: 5, lw: 3, drop: 0 });
-    }
-  ctx.restore();
-
-  // Thick ink outline around the plot, and a lit lip along the top edge.
-  ctx.lineWidth = 6;
-  ctx.strokeStyle = INK;
-  ctx.stroke(plot);
-  ctx.save();
-  ctx.clip(plot);
-  ctx.lineWidth = 5;
-  ctx.strokeStyle = css(PALETTE.groundLight, 0.3, 0.8);
-  ctx.beginPath();
-  ctx.moveTo(30, 10);
-  ctx.lineTo(W - 30, 10);
-  ctx.stroke();
-  ctx.restore();
-
-  // Acid pool ink rims (drawn last so they sit on top of the fill).
-  ctx.save();
-  ctx.clip(plot);
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 3.5;
-  for (let y = 0; y < world.height; y++)
-    for (let x = 0; x < world.width; x++) {
-      if (world.terrain[world.idx(x, y)] !== 'acid') continue;
-      const edges: [number, number][] = [
-        [0, -1],
-        [1, 0],
-        [0, 1],
-        [-1, 0],
-      ];
-      for (const [dx, dy] of edges) {
-        if (world.inBounds(x + dx, y + dy) && world.terrain[world.idx(x + dx, y + dy)] === 'acid') continue;
-        const cx = (x + 0.5) * TILE + dx * TILE * 0.45;
-        const cy = (y + 0.5) * TILE + dy * TILE * 0.45;
-        ctx.beginPath();
-        if (dx === 0) ctx.ellipse(cx, cy, TILE * 0.5, 6, 0, dy < 0 ? Math.PI : 0, dy < 0 ? Math.PI * 2 : Math.PI);
-        else ctx.ellipse(cx, cy, 6, TILE * 0.5, 0, dx < 0 ? Math.PI / 2 : -Math.PI / 2, dx < 0 ? Math.PI * 1.5 : Math.PI / 2);
-        ctx.stroke();
-      }
-    }
-  ctx.restore();
-  tex.refresh();
-}
-
-/** Night-sky backdrop behind the plot: dusk gradient, a ringed gas giant, distant mesas. */
-export function makeBackdrop(scene: Phaser.Scene) {
-  const W = 1024;
-  const H = 640;
-  const [ctx, tex] = canvas(scene, 'backdrop', W, H);
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, '#1d1230');
-  g.addColorStop(0.55, '#4a2340');
-  g.addColorStop(1, '#a8513a');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
-  const rng = mulberry32(99);
-  for (let i = 0; i < 140; i++) {
-    ctx.fillStyle = `rgba(255,240,220,${0.2 + rng() * 0.6})`;
-    ctx.fillRect(rng() * W, rng() * H * 0.5, 1.5, 1.5);
-  }
-  // Gas giant with a ring.
-  ctx.save();
-  ctx.translate(790, 150);
-  cel(ctx, circle(0, 0, 90), 0xd9774a, { k: 18, lw: 5, drop: 0 });
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 5;
-  ctx.beginPath();
-  ctx.ellipse(0, 6, 150, 28, -0.25, Math.PI * 0.05, Math.PI * 0.95);
-  ctx.stroke();
-  ctx.strokeStyle = 'rgba(255,214,150,0.8)';
-  ctx.lineWidth = 3;
-  ctx.stroke();
-  ctx.restore();
-  // Distant mesa silhouettes.
-  for (const [base, col] of [
-    [470, '#5a2a35'],
-    [540, '#3a1c28'],
-  ] as const) {
-    ctx.fillStyle = col;
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(0, H);
-    let x = 0;
-    while (x < W) {
-      const top = base - 40 - rng() * 90;
-      const w = 60 + rng() * 140;
-      ctx.lineTo(x, base);
-      ctx.lineTo(x + 10, top);
-      ctx.lineTo(x + w - 10, top);
-      ctx.lineTo(x + w, base);
-      x += w + rng() * 60;
-    }
-    ctx.lineTo(W, base);
-    ctx.lineTo(W, H);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-  }
-  tex.refresh();
 }
 
 // ---------- items ----------
@@ -806,7 +540,6 @@ export function makeBuildings(scene: Phaser.Scene) {
 }
 
 export function makeShared(scene: Phaser.Scene) {
-  makeBackdrop(scene);
   makeItems(scene);
   makeBelts(scene);
   makeBuildings(scene);
