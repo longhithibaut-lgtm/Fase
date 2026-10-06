@@ -358,7 +358,7 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
           if (sd < -2.2) continue;
           const u = (sd + 2.2) / 3.2;
           const a = u >= 1 ? 1 : u * u * (3 - 2 * u);
-          const al = Math.min(0.55, a * (0.3 + clump * 0.32));
+          const al = Math.min(0.6, a * (0.4 + clump * 0.26));
           r += (st.c[0] - r) * al;
           gg += (st.c[1] - gg) * al;
           b += (st.c[2] - b) * al;
@@ -366,7 +366,7 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
           if (grain > 0.93 - a * 0.06) {
             const gr = hash2(x >> 1, y >> 1, seed + 41);
             if (gr > 1 - a * 0.45) {
-              const oc = gr > 0.85 ? st.light : st.mid;
+              const oc = gr > 0.95 ? st.light : st.mid;
               r = oc[0] * 0.85;
               gg = oc[1] * 0.85;
               b = oc[2] * 0.85;
@@ -776,11 +776,22 @@ function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: nu
 
 // ---------- ore ----------
 
-export const ORE_PAL: Record<string, { dark: RGB; mid: RGB; light: RGB; stain: RGB }> = {
-  'iron-ore': { dark: [44, 58, 74], mid: [80, 98, 118], light: [158, 176, 194], stain: [84, 64, 52] },
-  'copper-ore': { dark: [92, 42, 22], mid: [168, 86, 44], light: [236, 150, 88], stain: [108, 64, 40] },
-  coal: { dark: [12, 12, 12], mid: [34, 34, 36], light: [96, 96, 102], stain: [42, 40, 38] },
-  stone: { dark: [96, 82, 62], mid: [160, 142, 112], light: [222, 206, 172], stain: [136, 120, 94] },
+/** Pulls a colour ~30% towards its own grey so ore reads as mineral, not candy. */
+const desat = (c: RGB, k = 0.7): RGB => {
+  const l = c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11;
+  return [l + (c[0] - l) * k, l + (c[1] - l) * k, l + (c[2] - l) * k];
+};
+const ore = (dark: RGB, mid: RGB, light: RGB, stain: RGB) => ({ dark: desat(dark), mid: desat(mid), light: desat(light), stain });
+
+/**
+ * Nugget colours (desaturated at build time) plus the soil stain painted under each deposit:
+ * blue-grey grit for iron, rust-brown for copper, dark umber for coal and pale dust for stone.
+ */
+export const ORE_PAL: Record<string, { dark: RGB; mid: RGB; light: RGB; stain: RGB; fleck?: RGB }> = {
+  'iron-ore': ore([34, 46, 62], [84, 104, 126], [176, 194, 212], [70, 82, 94]),
+  'copper-ore': { ...ore([60, 26, 12], [150, 72, 34], [236, 160, 104], [112, 60, 34]), fleck: [84, 122, 104] },
+  coal: ore([8, 8, 8], [32, 31, 30], [100, 100, 104], [36, 28, 20]),
+  stone: ore([92, 80, 62], [156, 140, 112], [222, 210, 182], [184, 170, 140]),
 };
 
 /** 0..1 richness from a tile's ore amount. */
@@ -789,115 +800,197 @@ export function oreRichness(amount: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-/** Tier 0 is the scattered rim (a lone stone or a small clump), 4 the packed rich core. */
+/** Tier 0 is the rim (a few loose pebbles), 4 the rich core (six big nuggets). */
 export const ORE_TIERS = 5;
-export const ORE_VARIANTS = 5;
-/** Ore textures overhang the tile so neighbouring tiles blend into one patch. */
+export const ORE_VARIANTS = 8;
+/** Ore textures overhang the tile so nuggets can straddle tile borders. */
 export const ORE_SIZE = 88;
+const ORE_TILE = 64;
 
-function chunk(ctx: Ctx, x: number, y: number, r: number, seed: number, p: { dark: RGB; mid: RGB; light: RGB }) {
+type Nugget = { x: number; y: number; r: number; pts: [number, number][] };
+
+/** A flat, angular nugget: an irregular 5-7 sided polygon, squashed and rotated. */
+function nuggetShape(x: number, y: number, r: number, seed: number): Nugget {
   const sides = 5 + Math.floor(hash2(seed, 0, 41) * 3);
-  const rot = hash2(seed, 1, 41) * Math.PI;
+  const rot = hash2(seed, 1, 41) * Math.PI * 2;
+  const squash = 0.7 + hash2(seed, 2, 41) * 0.25;
+  const cr = Math.cos(rot);
+  const sr = Math.sin(rot);
   const pts: [number, number][] = [];
   for (let a = 0; a < sides; a++) {
-    const ang = rot + (a / sides) * Math.PI * 2;
-    const rr = r * (0.7 + hash2(a, seed, 42) * 0.45);
-    pts.push([x + Math.cos(ang) * rr, y + Math.sin(ang) * rr * 0.82]);
+    const ang = (a / sides) * Math.PI * 2 + (hash2(a, seed, 44) - 0.5) * 0.45;
+    const rr = r * (0.8 + hash2(a, seed, 42) * 0.32);
+    const u = Math.cos(ang) * rr;
+    const v = Math.sin(ang) * rr * squash;
+    pts.push([x + u * cr - v * sr, y + u * sr + v * cr]);
   }
-  const path = (dx = 0, dy = 0) => {
-    ctx.beginPath();
-    pts.forEach(([px, py], i) => (i ? ctx.lineTo(px + dx, py + dy) : ctx.moveTo(px + dx, py + dy)));
-    ctx.closePath();
-  };
-  ctx.fillStyle = rgba(p.dark);
-  path();
+  return { x, y, r, pts };
+}
+
+function polyPath(ctx: Ctx, pts: [number, number][], dx = 0, dy = 0) {
+  ctx.beginPath();
+  pts.forEach(([px, py], i) => (i ? ctx.lineTo(px + dx, py + dy) : ctx.moveTo(px + dx, py + dy)));
+  ctx.closePath();
+}
+
+const lerpRGB = (a: RGB, b: RGB, t: number): RGB => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+/**
+ * Paints one nugget lit from the top-left: a lit facet on the upper-left side, a shaded
+ * facet on the lower-right, a thin highlight along the lit edges and a dark rim below.
+ */
+function paintNugget(ctx: Ctx, n: Nugget, seed: number, p: { dark: RGB; mid: RGB; light: RGB; fleck?: RGB }) {
+  const { x, y, r, pts } = n;
+  const tone = 0.85 + hash2(seed, 3, 45) * 0.3;
+  const base = lerpRGB(p.dark, p.mid, 0.55);
+  ctx.save();
+  polyPath(ctx, pts);
+  ctx.fillStyle = rgba(base, 1, tone);
   ctx.fill();
-  // Lit facets: fan from an off-centre apex, brighter towards the upper left.
-  const ax = x - r * 0.12;
-  const ay = y - r * 0.15;
-  for (let i = 0; i < sides; i++) {
-    const [x1, y1] = pts[i];
-    const [x2, y2] = pts[(i + 1) % sides];
-    const mx = (x1 + x2) / 2 - x;
-    const my = (y1 + y2) / 2 - y;
-    const lit = (-mx - my) / (r * 1.4); // -1..1
-    const t = Math.max(0, Math.min(1, 0.45 + lit * 0.6 + (hash2(i, seed, 43) - 0.5) * 0.25));
-    const c: RGB = t < 0.5
-      ? [p.dark[0] + (p.mid[0] - p.dark[0]) * t * 2, p.dark[1] + (p.mid[1] - p.dark[1]) * t * 2, p.dark[2] + (p.mid[2] - p.dark[2]) * t * 2]
-      : [p.mid[0] + (p.light[0] - p.mid[0]) * (t - 0.5) * 2, p.mid[1] + (p.light[1] - p.mid[1]) * (t - 0.5) * 2, p.mid[2] + (p.light[2] - p.mid[2]) * (t - 0.5) * 2];
-    ctx.fillStyle = rgba(c);
-    ctx.beginPath();
-    ctx.moveTo(ax, ay);
-    ctx.lineTo(x1 + (ax - x1) * 0.12, y1 + (ay - y1) * 0.12);
-    ctx.lineTo(x2 + (ax - x2) * 0.12, y2 + (ay - y2) * 0.12);
-    ctx.closePath();
-    ctx.fill();
+  ctx.clip();
+  // Ridge line: the lit facet is everything up-left of a line through an off-centre apex.
+  const ax = x - r * (0.05 + hash2(seed, 4, 45) * 0.2);
+  const ay = y - r * (0.05 + hash2(seed, 5, 45) * 0.2);
+  const tilt = (hash2(seed, 6, 45) - 0.5) * 0.9;
+  const ex = Math.cos(Math.PI * 0.75 + tilt) * r * 2;
+  const ey = Math.sin(Math.PI * 0.75 + tilt) * r * 2;
+  ctx.fillStyle = rgba(lerpRGB(p.mid, p.light, 0.12 + hash2(seed, 7, 45) * 0.2), 1, tone);
+  ctx.beginPath();
+  ctx.moveTo(ax + ex, ay + ey);
+  ctx.lineTo(ax - ex, ay - ey);
+  ctx.lineTo(x - r * 3, y - r * 3);
+  ctx.closePath();
+  ctx.fill();
+  // A smaller third facet in between for an angular, chipped look.
+  ctx.fillStyle = rgba(lerpRGB(p.dark, p.mid, 0.8), 0.9, tone);
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - ex, ay - ey);
+  ctx.lineTo(ax + r * 1.5, ay - r * 0.2);
+  ctx.closePath();
+  ctx.fill();
+  // Shade the bottom-right.
+  const g = ctx.createLinearGradient(x - r * 0.2, y - r * 0.2, x + r, y + r);
+  g.addColorStop(0, rgba(p.dark, 0));
+  g.addColorStop(1, rgba(p.dark, 0.95));
+  ctx.fillStyle = g;
+  ctx.fillRect(x - r * 1.5, y - r * 1.5, r * 3, r * 3);
+  // Mineral grain: a few pits and flecks so the faces are not flat vector fills.
+  const specks = Math.round(r * 1.6);
+  for (let i = 0; i < specks; i++) {
+    const sx = x + (hash2(i, seed, 46) - 0.5) * r * 1.8;
+    const sy = y + (hash2(seed, i, 47) - 0.5) * r * 1.6;
+    const h = hash2(i, seed, 48);
+    ctx.fillStyle = h > 0.6 ? rgba(p.light, 0.3, tone) : p.fleck && h > 0.4 ? rgba(p.fleck, 0.55) : rgba(p.dark, 0.4, 0.8);
+    ctx.fillRect(sx, sy, h > 0.9 ? 1.5 : 1, 1);
   }
-  ctx.strokeStyle = rgba(p.dark, 0.9, 0.6);
-  ctx.lineWidth = 1;
-  path();
-  ctx.stroke();
-  // Glint.
-  ctx.fillStyle = rgba(p.light, 0.7, 1.1);
-  ctx.fillRect(ax - r * 0.25, ay - r * 0.2, Math.max(1, r * 0.18), Math.max(1, r * 0.12));
+  ctx.restore();
+  // One-sided highlight: only edges facing up-left catch the light.
+  ctx.lineWidth = r > 5 ? 1.4 : 1;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < pts.length; i++) {
+    const [x1, y1] = pts[i];
+    const [x2, y2] = pts[(i + 1) % pts.length];
+    // Outward normal (polygon winds clockwise in screen space).
+    const nx = y2 - y1;
+    const ny = -(x2 - x1);
+    const lit = (-nx - ny) / Math.hypot(nx, ny);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    if (lit > 0.35) {
+      ctx.strokeStyle = rgba(p.light, Math.min(0.9, (lit - 0.2) * 1.1), tone);
+      ctx.stroke();
+    } else if (lit < -0.3) {
+      ctx.strokeStyle = rgba(p.dark, 0.9, 0.55);
+      ctx.stroke();
+    }
+  }
+  // Tiny glint near the lit corner on larger pieces.
+  if (r > 6) {
+    ctx.fillStyle = rgba(p.light, 0.75, 1.08);
+    ctx.fillRect(x - r * 0.45, y - r * 0.4, 1.5, 1.5);
+  }
+}
+
+/**
+ * Picks `n` points spread evenly over a tile using best-candidate sampling with toroidal
+ * distance, so neighbouring tiles continue the same even scatter without gaps or clumps.
+ */
+function scatter(n: number, sd: number, existing: [number, number][] = []): [number, number][] {
+  const T = ORE_TILE;
+  const pts: [number, number][] = [...existing];
+  const out: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    let best: [number, number] = [0, 0];
+    let bestD = -1;
+    for (let k = 0; k < 14; k++) {
+      const cx = hash2(i * 31 + k, sd, 71) * T;
+      const cy = hash2(sd, i * 31 + k, 72) * T;
+      let dmin = 1e9;
+      for (const [px, py] of pts) {
+        let dx = Math.abs(cx - px);
+        let dy = Math.abs(cy - py);
+        if (dx > T / 2) dx = T - dx;
+        if (dy > T / 2) dy = T - dy;
+        dmin = Math.min(dmin, dx * dx + dy * dy);
+      }
+      if (dmin > bestD) {
+        bestD = dmin;
+        best = [cx, cy];
+      }
+    }
+    pts.push(best);
+    out.push(best);
+  }
+  return out;
 }
 
 export function makeOre(scene: Phaser.Scene) {
   const S = ORE_SIZE;
-  const c = S / 2;
+  const off = (S - ORE_TILE) / 2;
   for (const [ore, p] of Object.entries(ORE_PAL)) {
     for (let t = 0; t < ORE_TIERS; t++) {
-      const rich = t / (ORE_TIERS - 1); // 0 = scattered rim, 1 = dense core
-      // Rim tiers keep their stones close to the tile centre so the edge breaks up.
-      const reach = [0.5, 0.72, 0.9, 1, 1][t];
       for (let v = 0; v < ORE_VARIANTS; v++) {
         const [ctx, tex] = canvas(scene, `ore-${ore}-${t}-${v}`, S, S);
         const sd = v * 97 + t * 1013 + ore.length * 13;
-        // Loose grit between the stones.
-        const grit = [5, 14, 30, 45, 70][t];
-        for (let i = 0; i < grit; i++) {
-          const a = hash2(i, sd, 51) * Math.PI * 2;
-          const rr = Math.sqrt(hash2(sd, i, 52)) * 36 * reach;
-          ctx.fillStyle = rgba(hash2(i, sd, 53) > 0.5 ? p.mid : p.dark, 0.6 + hash2(i, sd, 57) * 0.4);
-          const z = 1 + hash2(i, sd, 58) * 2;
-          ctx.fillRect(c + Math.cos(a) * rr, c + Math.sin(a) * rr, z, z);
-        }
-        // Stones packed over the whole tile so neighbours merge into one solid deposit:
-        // big overlapping chunks, medium fillers, then small pebbles filling the gaps.
-        const list: [number, number, number][] = [];
-        const big = [0, 1, 2, 4, 5][t];
-        // Rim variants: a lone stone, or a pair, with pebbles around.
-        const medium = [1 + (v % 2), 3, 5, 7, 8][t];
-        const small = [2 + (v % 3), 6, 10, 13, 16][t];
-        const jx = (hash2(sd, 1, 60) - 0.5) * 18 * reach;
-        const jy = (hash2(sd, 2, 60) - 0.5) * 18 * reach;
-        for (let i = 0; i < big; i++) {
-          const a = (i / big) * Math.PI * 2 + hash2(i, sd, 61) * 1.2;
-          const rr = (6 + hash2(sd, i, 62) * 16) * reach;
-          list.push([c + jx + Math.cos(a) * rr, c + jy + Math.sin(a) * rr, 11 + hash2(i, sd, 63) * (4 + rich * 5)]);
-        }
-        for (let i = 0; i < medium; i++) {
-          const a = hash2(i, sd, 67) * Math.PI * 2;
-          const rr = (t === 0 ? hash2(sd, i, 68) * 12 : 10 + hash2(sd, i, 68) * 20) * reach;
-          list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, (t === 0 ? 7 : 6) + hash2(i, sd, 69) * 4]);
-        }
-        for (let i = 0; i < small; i++) {
-          const a = hash2(i, sd, 64) * Math.PI * 2;
-          const rr = Math.sqrt(hash2(sd, i, 65)) * 36 * reach;
-          list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, 2.5 + hash2(i, sd, 66) * 3]);
-        }
-        list.sort((a, b) => a[1] - b[1]);
-        // Soft contact shadows first, then the stones.
+        // Count and size follow richness; the rim keeps just a few small loose pebbles.
+        const count = [1 + (v % 3), 3 + (v % 2), 4 + (v % 2), 5 + (v % 2), 6][t];
+        const [rMin, rMax] = [[3, 4.6], [5, 7.6], [7, 10], [8.6, 12], [10, 14]][t];
+        const pebbles = [1 + (v % 2), 3, 3, 3, 4][t];
+        const centres = scatter(count, sd);
+        const loose = scatter(pebbles, sd + 5, centres);
+        const list: Nugget[] = [];
+        const place = (pts: [number, number][], lo: number, hi: number, salt: number) =>
+          pts.forEach(([px, py], i) => {
+            // Keep everything inside the canvas once the overhang is added.
+            const r = lo + hash2(i, sd + salt, 63) * (hi - lo);
+            const x = Math.max(r + 2, Math.min(S - r - 3, px + off));
+            const y = Math.max(r + 2, Math.min(S - r - 3, py + off));
+            list.push(nuggetShape(x, y, r, sd * 7 + i * 13 + salt));
+          });
+        place(centres, rMin, rMax, 0);
+        place(loose, 1.6, t === 0 ? 2.8 : 3.4, 500);
+        list.sort((a, b) => a.y - b.y);
+        // Faint dark ring of disturbed soil, then a tight 1-2px contact shadow to the
+        // bottom-right so each nugget sits in the ground instead of floating on it.
         ctx.save();
-        ctx.filter = 'blur(2px)';
-        for (const [x, y, r] of list) {
-          ctx.fillStyle = 'rgba(10,8,4,0.45)';
-          ctx.beginPath();
-          ctx.ellipse(x + r * 0.35, y + r * 0.45, r * 1.05, r * 0.85, 0, 0, Math.PI * 2);
+        ctx.filter = 'blur(1.5px)';
+        for (const n of list) {
+          polyPath(ctx, n.pts, n.r * 0.12 + 0.5, n.r * 0.16 + 0.8);
+          ctx.fillStyle = `rgba(${(p.dark[0] * 0.3) | 0},${(p.dark[1] * 0.3) | 0},${(p.dark[2] * 0.3) | 0},0.32)`;
           ctx.fill();
         }
         ctx.restore();
-        list.forEach(([x, y, r], i) => chunk(ctx, x, y, r, sd + i * 7, p));
+        ctx.save();
+        ctx.filter = 'blur(0.6px)';
+        for (const n of list) {
+          polyPath(ctx, n.pts, n.r > 4 ? 1.8 : 1.1, n.r > 4 ? 2 : 1.2);
+          ctx.fillStyle = 'rgba(10,7,4,0.62)';
+          ctx.fill();
+        }
+        ctx.restore();
+        list.forEach((n, i) => paintNugget(ctx, n, sd + i * 7, p));
         tex.refresh();
       }
     }

@@ -100,19 +100,17 @@ export class FactoryScene extends Phaser.Scene {
         const o = w.ore[k];
         if (!o) continue;
         const v = Math.floor(hash2(x, y, w.seed + 5) * ORE_VARIANTS);
-        // Density follows richness, capped by depth into the deposit: the outer rings thin
-        // out into lone stones and small clumps, and their sprites shrink towards the edge.
+        // Nugget count and size follow richness, capped by depth into the deposit so the
+        // outer rings fall off into a few small loose pebbles. Sprites are never rotated:
+        // every nugget is lit from the top-left.
         const e = edge[k];
         const jit = hash2(x, y, w.seed + 6);
-        const cap = e <= 1 ? (jit < 0.6 ? 0 : 1) : e <= 2.2 ? 2 : ORE_TIERS - 1;
-        const rich = oreRichness(o.amount) * (ORE_TIERS - 1) + (jit - 0.5) * 0.9 + Math.min(1, (e - 2) * 0.25);
+        const cap = e <= 1 ? (jit < 0.6 ? 0 : 1) : e <= 2 ? 2 + (jit > 0.5 ? 1 : 0) : ORE_TIERS - 1;
+        const rich = oreRichness(o.amount) * (ORE_TIERS - 1) + (jit - 0.5) * 0.8 + 0.3;
         const t = Math.max(0, Math.min(cap, Math.round(rich)));
-        const scale = e <= 1 ? 0.7 + jit * 0.25 : e <= 2.2 ? 0.88 + jit * 0.12 : 0.95 + jit * 0.1;
-        // Jitter positions so the per-tile stone clusters do not line up into rows.
-        const jx = (hash2(x, y, w.seed + 9) - 0.5) * TILE * 0.36;
-        const jy = (hash2(x, y, w.seed + 10) - 0.5) * TILE * 0.36;
-        const img = this.add.image((x + 0.5) * TILE + jx, (y + 0.5) * TILE + jy, `ore-${o.type}-${t}-${v}`).setDepth(1).setScale(scale);
-        img.setAngle((hash2(x, y, w.seed + 8) - 0.5) * 40);
+        const jx = (hash2(x, y, w.seed + 9) - 0.5) * TILE * 0.1;
+        const jy = (hash2(x, y, w.seed + 10) - 0.5) * TILE * 0.1;
+        const img = this.add.image((x + 0.5) * TILE + jx, (y + 0.5) * TILE + jy, `ore-${o.type}-${t}-${v}`).setDepth(1);
         this.oreImages.set(k, img);
       }
   }
