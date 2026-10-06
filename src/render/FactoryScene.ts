@@ -3,6 +3,8 @@ import { BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type Dir, type Entity, World } from '../sim/world';
 import { BELT_FRAMES, TILE, makeAll } from './textures';
 import { Hud } from './hud';
+import { ORE_VARIANTS } from './ground';
+import { hash2 } from '../sim/rng';
 
 const STEP = 1 / 60;
 
@@ -96,7 +98,7 @@ export class FactoryScene extends Phaser.Scene {
         const k = w.idx(x, y);
         const o = w.ore[k];
         if (!o) continue;
-        const v = Math.floor(((x * 7 + y * 13) % 4 + 4) % 4);
+        const v = Math.floor(hash2(x, y, w.seed + 5) * ORE_VARIANTS);
         this.oreImages.set(k, this.add.image((x + 0.5) * TILE, (y + 0.5) * TILE, `ore-${o.type}-${v}`).setDepth(1));
       }
   }

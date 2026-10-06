@@ -2,7 +2,7 @@
 
 import Phaser from 'phaser';
 import { ITEMS, type ItemId } from '../sim/defs';
-import { fbm, hash2 } from '../sim/rng';
+import { hash2 } from '../sim/rng';
 import type { World } from '../sim/world';
 
 export const TILE = 64;
@@ -97,96 +97,8 @@ function hazard(ctx: Ctx, x: number, y: number, w: number, h: number) {
   ctx.restore();
 }
 
-// ---------- terrain ----------
-
-const TERRAIN_COLORS = {
-  grass: [[74, 82, 38], [96, 92, 44], [62, 70, 34]],
-  dirt: [[104, 82, 50], [124, 98, 60], [88, 68, 42]],
-  sand: [[150, 124, 78], [170, 142, 92], [132, 108, 66]],
-  water: [[28, 62, 74], [34, 78, 92], [22, 50, 60]],
-} as const;
-
-/** Paints the whole map at `px` pixels per tile. */
-export function makeTerrain(scene: Phaser.Scene, world: World, px = 16): string {
-  const W = world.width * px;
-  const H = world.height * px;
-  const [ctx, tex] = canvas(scene, 'terrain', W, H);
-  const img = ctx.createImageData(W, H);
-  const d = img.data;
-  const seed = world.seed;
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const tx = x / px;
-      const ty = y / px;
-      // Blend terrain at tile borders with jitter so edges look organic.
-      const jx = Math.min(world.width - 1, Math.max(0, Math.floor(tx + (hash2(x, y, seed) - 0.5) * 0.9)));
-      const jy = Math.min(world.height - 1, Math.max(0, Math.floor(ty + (hash2(y, x, seed) - 0.5) * 0.9)));
-      const t = world.terrain[world.idx(jx, jy)];
-      const pal = TERRAIN_COLORS[t];
-      const n = fbm(tx / 3, ty / 3, seed + 3, 3);
-      const fine = hash2(x, y, seed + 9);
-      const c = n < 0.45 ? pal[2] : n > 0.6 ? pal[1] : pal[0];
-      const k = 0.82 + fine * 0.3 + (n - 0.5) * 0.3;
-      const o = (y * W + x) * 4;
-      d[o] = c[0] * k;
-      d[o + 1] = c[1] * k;
-      d[o + 2] = c[2] * k;
-      d[o + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  // Scatter darker tufts and pebbles.
-  for (let i = 0; i < world.width * world.height * 0.6; i++) {
-    const x = hash2(i, 1, seed) * W;
-    const y = hash2(i, 2, seed) * H;
-    const t = world.terrain[world.idx(Math.floor(x / px), Math.floor(y / px))];
-    if (t === 'water') continue;
-    ctx.fillStyle = t === 'grass' ? 'rgba(30,40,12,0.45)' : 'rgba(40,30,20,0.4)';
-    ctx.fillRect(x, y, 1 + hash2(i, 3, seed) * 2, 1 + hash2(i, 4, seed) * 2);
-  }
-  tex.refresh();
-  return 'terrain';
-}
-
-// ---------- ore ----------
-
-const ORE_COLORS: Record<string, [number, number]> = {
-  'iron-ore': [0x5a6f86, 0x9fb6cf],
-  'copper-ore': [0xa0522d, 0xe08a4c],
-  coal: [0x1a1a1a, 0x4a4a4a],
-  stone: [0x8a7a62, 0xc4b394],
-};
-
-export function makeOre(scene: Phaser.Scene) {
-  for (const [ore, [dark, light]] of Object.entries(ORE_COLORS)) {
-    for (let v = 0; v < 4; v++) {
-      const [ctx, tex] = canvas(scene, `ore-${ore}-${v}`, TILE, TILE);
-      const n = 5 + v;
-      for (let i = 0; i < n; i++) {
-        const x = 8 + hash2(i, v, 11) * (TILE - 16);
-        const y = 8 + hash2(v, i, 12) * (TILE - 16);
-        const r = 4 + hash2(i, v, 13) * 6;
-        ctx.fillStyle = 'rgba(0,0,0,0.35)';
-        ctx.beginPath();
-        ctx.ellipse(x + 2, y + 3, r, r * 0.75, 0, 0, Math.PI * 2);
-        ctx.fill();
-        const g = ctx.createRadialGradient(x - r / 3, y - r / 3, 1, x, y, r);
-        g.addColorStop(0, shade(light, 0.15));
-        g.addColorStop(1, shade(dark, 0));
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.moveTo(x + r, y);
-        for (let a = 1; a <= 6; a++) {
-          const ang = (a / 6) * Math.PI * 2;
-          const rr = r * (0.75 + hash2(a, i + v * 7, 14) * 0.35);
-          ctx.lineTo(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr * 0.8);
-        }
-        ctx.fill();
-      }
-      tex.refresh();
-    }
-  }
-}
+export { makeTerrain, makeOre } from './ground';
+import { makeTerrain, makeOre } from './ground';
 
 // ---------- items ----------
 
