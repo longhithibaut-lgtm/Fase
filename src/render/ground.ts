@@ -76,6 +76,21 @@ const PAL: Record<Exclude<Terrain, 'water'>, [RGB, RGB, RGB]> = {
     [136, 110, 72],
   ],
 };
+// Grass palette is interpolated per pixel between a dry and a lush variant by zone.
+const DRY_GRASS: [RGB, RGB, RGB] = [
+  [92, 84, 44],
+  [122, 108, 60],
+  [126, 100, 58],
+];
+const LUSH_GRASS: [RGB, RGB, RGB] = [
+  [52, 66, 30],
+  [78, 90, 38],
+  [92, 86, 44],
+];
+const GR_LO: RGB = [0, 0, 0];
+const GR_HI: RGB = [0, 0, 0];
+const GR_AC: RGB = [0, 0, 0];
+const GR_PAL: [RGB, RGB, RGB] = [GR_LO, GR_HI, GR_AC];
 const DEEP: RGB = [14, 36, 48];
 const LAND_SAT = 0.74;
 const LAND_VAL = 0.8;
@@ -121,15 +136,16 @@ function blur(f: Float32Array, w: number, h: number): Float32Array {
   return o;
 }
 
-/** Signed distance (in tiles) to the shoreline: positive on land, negative in water. */
-function shoreDistance(world: World): Float32Array {
-  const { width: w, height: h } = world;
+/**
+ * Chamfer distance between tile centres: positive inside the mask (distance to the nearest
+ * tile outside it, so border tiles read 1), negative outside (minus the distance to the mask).
+ */
+function maskDistance(mask: Uint8Array, w: number, h: number): Float32Array {
   const INF = 1e9;
-  const land = new Float32Array(w * h).fill(INF);
-  const sea = new Float32Array(w * h).fill(INF);
-  for (let i = 0; i < w * h; i++) (world.terrain[i] === 'water' ? land : sea)[i] = 0;
-  // Two-pass chamfer distance for both sets.
-  for (const f of [land, sea]) {
+  const inside = new Float32Array(w * h).fill(INF);
+  const outside = new Float32Array(w * h).fill(INF);
+  for (let i = 0; i < w * h; i++) (mask[i] ? outside : inside)[i] = 0;
+  for (const f of [inside, outside]) {
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
@@ -148,9 +164,38 @@ function shoreDistance(world: World): Float32Array {
       }
   }
   const o = new Float32Array(w * h);
-  // Distances are tile-centre based; shift so the boundary sits at 0.
-  for (let i = 0; i < w * h; i++) o[i] = land[i] > 0 ? land[i] - 0.5 : -(sea[i] - 0.5);
+  for (let i = 0; i < w * h; i++) o[i] = mask[i] ? Math.min(inside[i], 64) : -Math.min(outside[i], 64);
   return o;
+}
+
+/** Signed distance (in tiles) to the shoreline: positive on land, negative in water. */
+function shoreDistance(world: World): Float32Array {
+  const { width: w, height: h } = world;
+  const m = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) m[i] = world.terrain[i] === 'water' ? 0 : 1;
+  const o = maskDistance(m, w, h);
+  // Distances are tile-centre based; shift so the boundary sits at 0.
+  for (let i = 0; i < w * h; i++) o[i] += o[i] > 0 ? -0.5 : 0.5;
+  return o;
+}
+
+/** Per tile: how deep inside its own ore deposit it sits (1 = outermost ring, 0 = no ore). */
+export function oreEdgeDistance(world: World): Float32Array {
+  const { width: w, height: h } = world;
+  const out = new Float32Array(w * h);
+  for (const type of Object.keys(ORE_PAL)) {
+    const m = new Uint8Array(w * h);
+    let any = false;
+    for (let i = 0; i < w * h; i++)
+      if (world.ore[i]?.type === type) {
+        m[i] = 1;
+        any = true;
+      }
+    if (!any) continue;
+    const d = maskDistance(m, w, h);
+    for (let i = 0; i < w * h; i++) if (m[i]) out[i] = d[i];
+  }
+  return out;
 }
 
 /** Paints the whole map at `px` pixels per tile. */
@@ -173,19 +218,33 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
     for (let i = 0; i < f.length; i++) f[i] = world.terrain[i] === t ? 1 : 0;
     return sampler(blur(f, tw, th), tw, th);
   });
-  // Per-ore-type stain fields, weighted by richness, blurred so they fade out past the patch edge.
+  // Per-ore-type signed distance to the deposit edge (tiles, + inside), used to paint a soft
+  // stain in the ore's colour that reaches a couple of tiles past the last chunk.
+  const stainNear = new Uint8Array(tw * th);
   const stains = Object.keys(ORE_PAL).map((type) => {
-    const f = new Float32Array(tw * th);
+    const m = new Uint8Array(tw * th);
     let any = false;
-    for (let i = 0; i < f.length; i++) {
-      const o = world.ore[i];
-      if (o && o.type === type) {
-        f[i] = 0.55 + oreRichness(o.amount) * 0.45;
+    for (let i = 0; i < m.length; i++)
+      if (world.ore[i]?.type === type) {
+        m[i] = 1;
         any = true;
       }
+    if (!any) return null;
+    const sd = maskDistance(m, tw, th);
+    for (let i = 0; i < sd.length; i++) {
+      sd[i] += sd[i] > 0 ? -0.5 : 0.5;
+      if (sd[i] > -4.5) stainNear[i] = 1;
     }
-    return any ? { s: sampler(blur(blur(f, tw, th), tw, th), tw, th), c: ORE_PAL[type].stain, mid: ORE_PAL[type].mid, light: ORE_PAL[type].light } : null;
+    return { s: sampler(sd, tw, th), c: ORE_PAL[type].stain, mid: ORE_PAL[type].mid, light: ORE_PAL[type].light };
   }).filter((v): v is { s: (x: number, y: number) => number; c: RGB; mid: RGB; light: RGB } => !!v);
+  // Broad lush / dry zones: three or four big regions across the map that tint the ground
+  // and drive how thick the grass grows.
+  const nzZ = new Noise(seed * 19 + 77);
+  const lushAt = (x: number, y: number) => {
+    const z = nzZ.fbm(x * 0.028 + 3.1, y * 0.028 + 8.7, 2);
+    const u = (z - 0.37) / 0.26;
+    return u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u);
+  };
   const nz3 = new Noise(seed * 31 + 9);
   const shore = sampler(shoreDistance(world), tw, th);
   const [wG, wD, wS] = weights;
@@ -238,7 +297,13 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
         b += k * ((lo[2] + (hi[2] - lo[2]) * t) * (1 - a) + ac[2] * a);
       };
       const m = (mid - 0.3) * 1.8 + (fine - 0.5) * 0.5;
-      mix(PAL.grass, kg, m, (large - 0.55) * 2.5);
+      const lush = lushAt(tx0, ty0);
+      for (let c = 0; c < 3; c++) {
+        GR_LO[c] = DRY_GRASS[0][c] + (LUSH_GRASS[0][c] - DRY_GRASS[0][c]) * lush;
+        GR_HI[c] = DRY_GRASS[1][c] + (LUSH_GRASS[1][c] - DRY_GRASS[1][c]) * lush;
+        GR_AC[c] = DRY_GRASS[2][c] + (LUSH_GRASS[2][c] - DRY_GRASS[2][c]) * lush;
+      }
+      mix(GR_PAL, kg, m, (large - 0.55) * 2.5);
       mix(PAL.dirt, kd, m, (0.45 - mid) * 2);
       mix(PAL.sand, ks, m, (fine - 0.6) * 2);
 
@@ -263,28 +328,49 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
       const gb = hash2(x, y, seed + 11);
       if (kg > 0.4 && gb > 0.965) { gg *= 1.12; r *= 1.04; } else if (kg > 0.4 && gb < 0.03) k *= 0.85;
 
-      // Ore bed: dark, tinted soil under each patch with a defined darker rim just past the
-      // outer chunks, noise-eroded so the edge is ragged, plus loose ore grit inside.
-      for (const st of stains) {
-        let v = st.s(tx0 + wx * 0.25, ty0 + wy * 0.25);
-        if (v < 0.04) continue;
-        v = v + (mid - 0.5) * 0.3 + (fine - 0.5) * 0.12;
-        const u = (v - 0.24) / 0.22;
-        const a = u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u);
-        if (a <= 0) continue;
-        r += (st.c[0] - r) * a * 0.85;
-        gg += (st.c[1] - gg) * a * 0.85;
-        b += (st.c[2] - b) * a * 0.85;
-        // Darker band at the bed's edge (v ~0.2..0.45), lighter churned soil in the core.
-        const rim = Math.max(0, 1 - Math.abs(v - 0.36) / 0.13);
-        k *= 1 - rim * 0.3 - a * 0.12;
-        if (v > 0.35 && grain > 0.9) {
-          const gr = hash2(x >> 1, y >> 1, seed + 41);
-          if (gr > 0.55) {
-            const oc = gr > 0.8 ? st.light : st.mid;
-            r = oc[0] * 0.9;
-            gg = oc[1] * 0.9;
-            b = oc[2] * 0.9;
+      // Mottling: soft dark-green vegetation spots (thicker in lush zones) and pale bare
+      // blotches (dry zones), about half a tile across, painted into the soil itself.
+      if (kg + kd > 0.3) {
+        const sp1 = nz3.v(tx0 * 1.7 + 11, ty0 * 1.7 - 7) * 0.7 + nz2.v(tx0 * 4.1 + 3, ty0 * 4.1) * 0.3;
+        const thr = 0.6 - lush * 0.1;
+        if (sp1 > thr) {
+          const a = Math.min(1, (sp1 - thr) * 9) * (0.3 + lush * 0.12);
+          r *= 1 - a * 0.85;
+          gg *= 1 - a * 0.5;
+          b *= 1 - a * 0.85;
+        } else if (sp1 < 0.34) {
+          const a = Math.min(1, (0.34 - sp1) * 7) * (0.16 - lush * 0.1);
+          r *= 1 + a;
+          gg *= 1 + a * 0.85;
+          b *= 1 + a * 0.5;
+        }
+      }
+      // Lush zones run darker and cooler across all land, dry zones paler and warmer.
+      r *= 1.05 - lush * 0.1;
+      gg *= 1.02 - lush * 0.03;
+      b *= 0.97 - lush * 0.06;
+
+      // Ore stain: soft, mottled, low-alpha wash in the ore's colour under each deposit,
+      // fading out over ~2 tiles past the edge, with loose ore dust thinning outwards.
+      if (stainNear[(ty0 | 0) * tw + (tx0 | 0)]) {
+        for (const st of stains) {
+          const sd = st.s(tx0 + wx * 0.4, ty0 + wy * 0.4) + (mid - 0.5) * 1.6 + (fine - 0.5) * 0.5;
+          if (sd < -2.2) continue;
+          const u = (sd + 2.2) / 3.2;
+          const a = u >= 1 ? 1 : u * u * (3 - 2 * u);
+          const al = Math.min(0.55, a * (0.3 + clump * 0.32));
+          r += (st.c[0] - r) * al;
+          gg += (st.c[1] - gg) * al;
+          b += (st.c[2] - b) * al;
+          k *= 1 - a * 0.05;
+          if (grain > 0.93 - a * 0.06) {
+            const gr = hash2(x >> 1, y >> 1, seed + 41);
+            if (gr > 1 - a * 0.45) {
+              const oc = gr > 0.85 ? st.light : st.mid;
+              r = oc[0] * 0.85;
+              gg = oc[1] * 0.85;
+              b = oc[2] * 0.85;
+            }
           }
         }
       }
@@ -338,7 +424,7 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
     const g3 = g * g * g;
     const o = wD(x + warpX(x, y), y + warpY(x, y)) + g * dry * 0.6;
     const k = g3 / Math.max(0.0001, g3 + o * o * o + 0.0001);
-    return { grass: k, dry };
+    return { grass: k, dry, lush: lushAt(x, y) };
   });
   tex.refresh();
   tex.setFilter(Phaser.Textures.FilterMode.LINEAR);
@@ -567,7 +653,7 @@ function clumpSet(): { green: Clump[]; straw: Clump[] } {
   return { green, straw };
 }
 
-function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: number) => number, grassAt: (x: number, y: number) => { grass: number; dry: number }) {
+function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: number) => number, grassAt: (x: number, y: number) => { grass: number; dry: number; lush: number }) {
   const { width: tw, height: th, seed } = world;
   const rnd = mulberry32(seed * 31 + 9);
   const nz = new Noise(seed * 3 + 11);
@@ -585,30 +671,53 @@ function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: nu
   };
   const area = tw * th;
 
-  // Grass clumps: 1-3 per grass tile, clustered by a second noise into thick and bare
-  // patches; straw variants at grass edges and in dry spots, fading out on dirt.
+  // Grass clumps grow in clusters: seed points are accepted by a noise field (thick in lush
+  // zones, rare in dry ones), then each seed spawns a tight family of clumps, biggest in
+  // the middle. Straw variants take over at grass edges and in dry zones.
   const set = clumpSet();
   const cl = new Noise(seed * 5 + 23);
-  for (let i = 0; i < area * 9; i++) {
+  const onOre = (x: number, y: number) => !!world.ore[world.idx(Math.min(tw - 1, Math.max(0, x | 0)), Math.min(th - 1, Math.max(0, y | 0)))];
+  const gauss = () => (rnd() + rnd() + rnd() - 1.5) * 1.15;
+  const drawClump = (x: number, y: number, g: { grass: number; dry: number; lush: number }, size: number) => {
+    const dryEdge = 1 - g.grass + g.dry * 0.8 + (1 - g.lush) * 0.45;
+    const useStraw = rnd() < Math.min(0.95, dryEdge * 0.85 - 0.12);
+    const arr = useStraw ? set.straw : set.green;
+    const pick = Math.max(0, Math.min(arr.length - 1, Math.floor((size * 0.75 + rnd() * 0.35) * arr.length)));
+    const sp = arr[pick];
+    ctx.globalAlpha = useStraw ? 0.7 + g.grass * 0.3 : 1;
+    ctx.drawImage(sp.c, Math.round(x * px - sp.o), Math.round(y * px - sp.o));
+  };
+  for (let i = 0; i < area * 2.4; i++) {
+    const x0 = rnd() * tw;
+    const y0 = rnd() * th;
+    if (at(x0, y0) === 'water') continue;
+    const g0 = grassAt(x0, y0);
+    const c1 = cl.fbm(x0 * 0.12, y0 * 0.12, 3);
+    const field = (c1 - 0.5) * 3.2 + (g0.lush - 0.5) * 1.3 + (g0.grass - 0.6) * 0.9;
+    const dens = field + 0.25;
+    if (dens <= 0 || rnd() > dens) continue;
+    const n = 2 + Math.floor(Math.min(1.3, dens) * (3 + rnd() * 6));
+    const spread = 0.3 + rnd() * 0.45 + Math.min(1, dens) * 0.35;
+    for (let j = 0; j < n; j++) {
+      const ox = gauss() * spread;
+      const oy = gauss() * spread * 0.85;
+      const x = x0 + ox;
+      const y = y0 + oy;
+      if (at(x, y) === 'water' || shore(x, y) < 0.35 || onOre(x, y)) continue;
+      const g = grassAt(x, y);
+      if (g.grass < 0.12 && rnd() < 0.7) continue;
+      const centre = Math.max(0, 1 - Math.hypot(ox, oy) / (spread * 1.6));
+      drawClump(x, y, g, Math.min(1, centre * 0.8 + Math.min(1, dens) * 0.3));
+    }
+  }
+  // A light scatter of lone clumps so bare ground is not completely empty.
+  for (let i = 0; i < area * 0.3; i++) {
     const x = rnd() * tw;
     const y = rnd() * th;
-    const t = at(x, y);
-    if (t === 'water' || shore(x, y) < 0.35 || nearOre(x, y)) continue;
+    if (at(x, y) === 'water' || shore(x, y) < 0.35 || onOre(x, y) || nearOre(x, y)) continue;
     const g = grassAt(x, y);
-    // Cluster field: broad patches times finer clumping.
-    const c1 = cl.fbm(x * 0.13, y * 0.13, 2);
-    const c2 = cl.v(x * 0.7 + 50, y * 0.7 - 20);
-    let dens = Math.min(1.4, Math.max(0, (c1 - 0.3) * 3.4) * (0.35 + c2 * 1.1));
-    dens *= 0.22 + g.grass * 0.85;
-    if (rnd() > dens * 0.6) continue;
-    const dryEdge = 1 - g.grass + g.dry * 0.8;
-    const useStraw = rnd() < Math.min(0.95, dryEdge * 0.9 - 0.05);
-    const arr = useStraw ? set.straw : set.green;
-    // Bigger clumps in the thickest spots.
-    const big = Math.min(arr.length - 1, Math.floor(rnd() * arr.length * (0.55 + dens * 0.45)));
-    const sp = arr[big];
-    ctx.globalAlpha = useStraw ? 0.75 + g.grass * 0.25 : 1;
-    ctx.drawImage(sp.c, Math.round(x * px - sp.o), Math.round(y * px - sp.o));
+    if (rnd() > 0.2 + g.grass * 0.4) continue;
+    drawClump(x, y, g, rnd() * 0.4);
   }
   ctx.globalAlpha = 1;
   // Fine single blades between clumps, mostly on grass.
@@ -668,10 +777,10 @@ function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: nu
 // ---------- ore ----------
 
 export const ORE_PAL: Record<string, { dark: RGB; mid: RGB; light: RGB; stain: RGB }> = {
-  'iron-ore': { dark: [44, 58, 74], mid: [80, 98, 118], light: [158, 176, 194], stain: [52, 58, 62] },
-  'copper-ore': { dark: [92, 42, 22], mid: [168, 86, 44], light: [236, 150, 88], stain: [88, 52, 32] },
-  coal: { dark: [12, 12, 12], mid: [34, 34, 36], light: [96, 96, 102], stain: [30, 28, 26] },
-  stone: { dark: [96, 82, 62], mid: [160, 142, 112], light: [222, 206, 172], stain: [128, 110, 84] },
+  'iron-ore': { dark: [44, 58, 74], mid: [80, 98, 118], light: [158, 176, 194], stain: [84, 64, 52] },
+  'copper-ore': { dark: [92, 42, 22], mid: [168, 86, 44], light: [236, 150, 88], stain: [108, 64, 40] },
+  coal: { dark: [12, 12, 12], mid: [34, 34, 36], light: [96, 96, 102], stain: [42, 40, 38] },
+  stone: { dark: [96, 82, 62], mid: [160, 142, 112], light: [222, 206, 172], stain: [136, 120, 94] },
 };
 
 /** 0..1 richness from a tile's ore amount. */
@@ -680,7 +789,8 @@ export function oreRichness(amount: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-export const ORE_TIERS = 4;
+/** Tier 0 is the scattered rim (a lone stone or a small clump), 4 the packed rich core. */
+export const ORE_TIERS = 5;
 export const ORE_VARIANTS = 5;
 /** Ore textures overhang the tile so neighbouring tiles blend into one patch. */
 export const ORE_SIZE = 88;
@@ -737,15 +847,17 @@ export function makeOre(scene: Phaser.Scene) {
   const c = S / 2;
   for (const [ore, p] of Object.entries(ORE_PAL)) {
     for (let t = 0; t < ORE_TIERS; t++) {
-      const rich = t / (ORE_TIERS - 1); // 0 = sparse edge, 1 = dense core
+      const rich = t / (ORE_TIERS - 1); // 0 = scattered rim, 1 = dense core
+      // Rim tiers keep their stones close to the tile centre so the edge breaks up.
+      const reach = [0.5, 0.72, 0.9, 1, 1][t];
       for (let v = 0; v < ORE_VARIANTS; v++) {
         const [ctx, tex] = canvas(scene, `ore-${ore}-${t}-${v}`, S, S);
         const sd = v * 97 + t * 1013 + ore.length * 13;
         // Loose grit between the stones.
-        const grit = 30 + rich * 40;
+        const grit = [5, 14, 30, 45, 70][t];
         for (let i = 0; i < grit; i++) {
           const a = hash2(i, sd, 51) * Math.PI * 2;
-          const rr = Math.sqrt(hash2(sd, i, 52)) * 36;
+          const rr = Math.sqrt(hash2(sd, i, 52)) * 36 * reach;
           ctx.fillStyle = rgba(hash2(i, sd, 53) > 0.5 ? p.mid : p.dark, 0.6 + hash2(i, sd, 57) * 0.4);
           const z = 1 + hash2(i, sd, 58) * 2;
           ctx.fillRect(c + Math.cos(a) * rr, c + Math.sin(a) * rr, z, z);
@@ -753,24 +865,25 @@ export function makeOre(scene: Phaser.Scene) {
         // Stones packed over the whole tile so neighbours merge into one solid deposit:
         // big overlapping chunks, medium fillers, then small pebbles filling the gaps.
         const list: [number, number, number][] = [];
-        const big = [2, 3, 4, 5][t];
-        const medium = [5, 6, 7, 8][t];
-        const small = [10, 12, 14, 16][t];
-        const jx = (hash2(sd, 1, 60) - 0.5) * 18;
-        const jy = (hash2(sd, 2, 60) - 0.5) * 18;
+        const big = [0, 1, 2, 4, 5][t];
+        // Rim variants: a lone stone, or a pair, with pebbles around.
+        const medium = [1 + (v % 2), 3, 5, 7, 8][t];
+        const small = [2 + (v % 3), 6, 10, 13, 16][t];
+        const jx = (hash2(sd, 1, 60) - 0.5) * 18 * reach;
+        const jy = (hash2(sd, 2, 60) - 0.5) * 18 * reach;
         for (let i = 0; i < big; i++) {
           const a = (i / big) * Math.PI * 2 + hash2(i, sd, 61) * 1.2;
-          const rr = 6 + hash2(sd, i, 62) * 16;
+          const rr = (6 + hash2(sd, i, 62) * 16) * reach;
           list.push([c + jx + Math.cos(a) * rr, c + jy + Math.sin(a) * rr, 11 + hash2(i, sd, 63) * (4 + rich * 5)]);
         }
         for (let i = 0; i < medium; i++) {
           const a = hash2(i, sd, 67) * Math.PI * 2;
-          const rr = 10 + hash2(sd, i, 68) * 20;
-          list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, 6 + hash2(i, sd, 69) * 4]);
+          const rr = (t === 0 ? hash2(sd, i, 68) * 12 : 10 + hash2(sd, i, 68) * 20) * reach;
+          list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, (t === 0 ? 7 : 6) + hash2(i, sd, 69) * 4]);
         }
         for (let i = 0; i < small; i++) {
           const a = hash2(i, sd, 64) * Math.PI * 2;
-          const rr = Math.sqrt(hash2(sd, i, 65)) * 36;
+          const rr = Math.sqrt(hash2(sd, i, 65)) * 36 * reach;
           list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, 2.5 + hash2(i, sd, 66) * 3]);
         }
         list.sort((a, b) => a[1] - b[1]);

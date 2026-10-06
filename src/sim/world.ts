@@ -174,27 +174,58 @@ export class World {
       ['coal', -11, 10],
       ['stone', 12, 9],
     ];
-    for (const [type, ox, oy] of starts) this.orePatch(type, cx + ox, cy + oy, 5.5, rng);
+    // Starter patches are mid-sized; outer patches range ~3x in radius, from small
+    // pockets to large sprawling fields.
+    for (const [type, ox, oy] of starts) this.orePatch(type, cx + ox, cy + oy, 5.6 + rng() * 1.8, rng);
     for (let i = 0; i < 10; i++) {
       const type = ORES[Math.floor(rng() * ORES.length)];
       const a = rng() * Math.PI * 2;
       const r = 26 + rng() * 18;
-      this.orePatch(type, Math.round(cx + Math.cos(a) * r), Math.round(cy + Math.sin(a) * r), 3.5 + rng() * 4, rng);
+      const size = rng();
+      this.orePatch(type, Math.round(cx + Math.cos(a) * r), Math.round(cy + Math.sin(a) * r), 2.8 + size * size * 5.8, rng);
     }
   }
 
+  /**
+   * One ore deposit. The mask is a domain-warped, low-frequency noise threshold over a
+   * stretched, randomly rotated ellipse, so deposits come out elongated, lobed or kidney
+   * shaped with bays and peninsulas. The centre always holds ore; amount grows inwards.
+   */
   private orePatch(type: OreId, px: number, py: number, radius: number, rng: () => number): void {
     const s = Math.floor(rng() * 1e6);
-    const R = Math.ceil(radius * 1.6);
+    const ang = rng() * Math.PI;
+    const stretch = 1.2 + rng() * 0.8;
+    const ra = radius * Math.sqrt(stretch);
+    const rb = radius / Math.sqrt(stretch);
+    const ca = Math.cos(ang);
+    const sa = Math.sin(ang);
+    const f = 1 / (radius * 0.85);
+    const warpAmt = radius * 1.5;
+    const warp = (x: number, y: number): [number, number] => [
+      (fbm(x * f * 0.7, y * f * 0.7, s + 1, 2) - 0.5) * warpAmt,
+      (fbm(x * f * 0.7 + 31.7, y * f * 0.7 + 17.3, s + 2, 2) - 0.5) * warpAmt,
+    ];
+    // Zero the warp at the centre so the deposit stays anchored on (px, py).
+    const [w0x, w0y] = warp(px, py);
+    const R = Math.ceil(ra * 1.8 + 3);
     for (let y = py - R; y <= py + R; y++) {
       for (let x = px - R; x <= px + R; x++) {
         if (!this.inBounds(x, y)) continue;
         const i = this.idx(x, y);
         if (this.terrain[i] === 'water') continue;
-        const d = Math.hypot(x - px, y - py) / radius;
-        const wobble = fbm(x / 3, y / 3, s) * 0.8;
-        const v = 1 - d + wobble - 0.4;
-        if (v > 0) this.ore[i] = { type, amount: Math.round(300 + v * 1500) };
+        const prev = this.ore[i];
+        if (prev && prev.type !== type) continue;
+        const [wx, wy] = warp(x, y);
+        const qx = x - px + wx - w0x;
+        const qy = y - py + wy - w0y;
+        const u = (qx * ca + qy * sa) / ra;
+        const v = (-qx * sa + qy * ca) / rb;
+        const d = Math.hypot(u, v);
+        const n = fbm((x + wx) * f, (y + wy) * f, s + 3, 3);
+        const m = 1 - d + (n - 0.5) * 1.7 * Math.min(1, d + 0.3);
+        if (m <= 0) continue;
+        const amount = Math.round(300 + Math.min(1, m * 2.4) * 1500);
+        if (!prev || prev.amount < amount) this.ore[i] = { type, amount };
       }
     }
   }

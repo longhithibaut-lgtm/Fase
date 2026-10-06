@@ -3,7 +3,7 @@ import { BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type Dir, type Entity, World } from '../sim/world';
 import { BELT_FRAMES, TILE, makeAll } from './textures';
 import { Hud } from './hud';
-import { ORE_VARIANTS, ORE_TIERS, oreRichness } from './ground';
+import { ORE_VARIANTS, ORE_TIERS, oreEdgeDistance, oreRichness } from './ground';
 import { hash2 } from '../sim/rng';
 
 const STEP = 1 / 60;
@@ -93,21 +93,25 @@ export class FactoryScene extends Phaser.Scene {
     img.setScale((this.world.width * TILE) / img.width);
     this.terrainImage = img;
     const w = this.world;
+    const edge = oreEdgeDistance(w);
     for (let y = 0; y < w.height; y++)
       for (let x = 0; x < w.width; x++) {
         const k = w.idx(x, y);
         const o = w.ore[k];
         if (!o) continue;
         const v = Math.floor(hash2(x, y, w.seed + 5) * ORE_VARIANTS);
-        // Richness plus jitter picks the density tier; edge tiles thin out to sparse pebbles.
-        let n = 0;
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (w.inBounds(x + dx, y + dy) && w.ore[w.idx(x + dx, y + dy)]) n++;
-        const rich = oreRichness(o.amount) * (n < 4 ? 0.45 : 1) + (hash2(x, y, w.seed + 6) - 0.5) * 0.35;
-        const t = Math.max(0, Math.min(ORE_TIERS - 1, Math.round(rich * (ORE_TIERS - 1))));
+        // Density follows richness, capped by depth into the deposit: the outer rings thin
+        // out into lone stones and small clumps, and their sprites shrink towards the edge.
+        const e = edge[k];
+        const jit = hash2(x, y, w.seed + 6);
+        const cap = e <= 1 ? (jit < 0.6 ? 0 : 1) : e <= 2.2 ? 2 : ORE_TIERS - 1;
+        const rich = oreRichness(o.amount) * (ORE_TIERS - 1) + (jit - 0.5) * 0.9 + Math.min(1, (e - 2) * 0.25);
+        const t = Math.max(0, Math.min(cap, Math.round(rich)));
+        const scale = e <= 1 ? 0.7 + jit * 0.25 : e <= 2.2 ? 0.88 + jit * 0.12 : 0.95 + jit * 0.1;
         // Jitter positions so the per-tile stone clusters do not line up into rows.
-        const jx = (hash2(x, y, w.seed + 9) - 0.5) * TILE * 0.3;
-        const jy = (hash2(x, y, w.seed + 10) - 0.5) * TILE * 0.3;
-        const img = this.add.image((x + 0.5) * TILE + jx, (y + 0.5) * TILE + jy, `ore-${o.type}-${t}-${v}`).setDepth(1);
+        const jx = (hash2(x, y, w.seed + 9) - 0.5) * TILE * 0.36;
+        const jy = (hash2(x, y, w.seed + 10) - 0.5) * TILE * 0.36;
+        const img = this.add.image((x + 0.5) * TILE + jx, (y + 0.5) * TILE + jy, `ore-${o.type}-${t}-${v}`).setDepth(1).setScale(scale);
         img.setAngle((hash2(x, y, w.seed + 8) - 0.5) * 40);
         this.oreImages.set(k, img);
       }
