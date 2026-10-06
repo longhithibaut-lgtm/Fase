@@ -1307,121 +1307,511 @@ function makeCargoDrop(scene: Phaser.Scene) {
   t2.refresh();
 }
 
-// Grabber arm: bolted base plate with a turret, two arm segments and a two-fingered claw.
-const ARM_L = 30;
+// Grabber arm: a bolted base plate carrying a slewing ring and a shoulder turret, a two-segment
+// arm (hazard-yellow upper, steel forearm) with a hydraulic piston across the elbow, bolt-capped
+// pivots and a chunky two-finger claw. The arm is seen from above, so the moving parts are shaded
+// symmetrically (bevelled edges, lit top face) and a fixed overlay supplies the top-left light on
+// the round parts; each part casts a soft shadow that is offset to the lower right like the rest.
+const UPPER_L = 34; // shoulder to elbow
+const FORE_L = 28; // elbow to wrist
+const HUB_Y = 28; // shoulder pivot height on the base texture
+const KNUCKLE = 8; // finger pivots either side of the wrist axis
+const KNUCKLE_FWD = 6;
+const GRIP = 16; // held item distance ahead of the wrist
+
+/** A tapered capsule from (cx, y0, r0) at the bottom to (cx, y1, r1) at the top. */
+function taper(cx: number, y0: number, r0: number, y1: number, r1: number): PathFn {
+  return (c, ox, oy) => {
+    c.moveTo(cx - r0 + ox, y0 + oy);
+    c.lineTo(cx - r1 + ox, y1 + oy);
+    c.arc(cx + ox, y1 + oy, r1, Math.PI, 0);
+    c.lineTo(cx + r0 + ox, y0 + oy);
+    c.arc(cx + ox, y0 + oy, r0, 0, Math.PI);
+    c.closePath();
+  };
+}
+
+/**
+ * An arm segment seen from above: dark bevelled sides with hatching, a flat lit top face, a
+ * central lightening slot, hazard band, chips and scratches. Shading is symmetric so it reads at
+ * any rotation. Pivot at the bottom, next joint at the top.
+ */
+function armSegment(c: Ctx, cx: number, y0: number, r0: number, y1: number, r1: number, base: number, seed: number, slot = true) {
+  const hull = taper(cx, y0, r0, y1, r1);
+  const top = taper(cx, y0, r0 - 1.8, y1, r1 - 1.7);
+  clipTo(c, hull, () => {
+    c.fillStyle = css(base, -0.4);
+    c.fillRect(0, 0, 64, 128);
+    hatch(c, 0, 0, 64, 128, 3.5, 0.4, 1.1);
+  });
+  c.beginPath();
+  top(c, 0, 0);
+  c.fillStyle = css(base);
+  c.fill();
+  clipTo(c, top, () => {
+    // Lit crown down the middle, a softer shoulder either side.
+    c.fillStyle = css(base, 0.3);
+    c.fillRect(cx - (r1 - 2) * 0.45, 0, (r1 - 2) * 0.9, 128);
+    // Lightening slot: a dark recess with a lit lower lip.
+    const sy = y1 + r1 + 5;
+    const sh = y0 - r0 - 4 - sy;
+    if (slot && sh > 6) {
+      c.fillStyle = '#231a18';
+      c.beginPath();
+      c.roundRect(cx - 2.6, sy, 5.2, sh, 2.6);
+      c.fill();
+      c.strokeStyle = css(base, 0.55);
+      c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(cx - 2.4, sy + sh + 1);
+      c.lineTo(cx + 2.4, sy + sh + 1);
+      c.stroke();
+    }
+    // Small paint flakes near the edges.
+    const rng = mulberry32(seed);
+    for (let i = 0; i < 3; i++) {
+      const fy = y1 + r1 + rng() * (y0 - y1 - r1 - r0);
+      const fx = cx + (rng() < 0.5 ? -1 : 1) * (r1 - 3.5);
+      c.fillStyle = css(0xc9d1d8);
+      c.beginPath();
+      poly(blob(fx, fy, 1.2 + rng() * 0.8, seed + i, 5, 0.7))(c, 0, 0);
+      c.fill();
+      c.strokeStyle = 'rgba(28,20,17,0.7)';
+      c.lineWidth = 0.8;
+      c.stroke();
+    }
+    scratches(c, cx - 8, y1, 16, y0 - y1, seed + 1, 4);
+  });
+  // Bevel edge lines: a thin light line where the top face meets each side.
+  c.beginPath();
+  top(c, 0, 0);
+  c.strokeStyle = css(base, 0.6, 0.8);
+  c.lineWidth = 1;
+  c.stroke();
+  inkStroke(c, hull, 2.6);
+}
+
+/** Bolt cap over a pivot: inked disc, bevelled rim lit top-left, hex bolt head. Never rotated. */
+function pivotCap(c: Ctx, x: number, y: number, r: number, rim: number) {
+  c.fillStyle = INK;
+  c.beginPath();
+  c.arc(x, y, r + 1.4, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = css(rim, -0.35);
+  c.beginPath();
+  c.arc(x, y, r, 0, Math.PI * 2);
+  c.fill();
+  c.save();
+  c.beginPath();
+  c.arc(x, y, r, 0, Math.PI * 2);
+  c.clip();
+  c.fillStyle = css(rim);
+  c.beginPath();
+  c.arc(x - r * 0.18, y - r * 0.24, r, 0, Math.PI * 2);
+  c.fill();
+  c.restore();
+  // Rim highlight arc.
+  c.strokeStyle = 'rgba(255,250,235,0.85)';
+  c.lineWidth = 1.2;
+  c.beginPath();
+  c.arc(x, y, r - 1.2, Math.PI * 1.05, Math.PI * 1.6);
+  c.stroke();
+  // Hex bolt.
+  const hr = r * 0.5;
+  const hex: [number, number][] = [0, 1, 2, 3, 4, 5].map((i) => [x + Math.cos((i / 6) * Math.PI * 2 + 0.3) * hr, y + Math.sin((i / 6) * Math.PI * 2 + 0.3) * hr]);
+  c.beginPath();
+  poly(hex)(c, 0, 0);
+  c.fillStyle = css(0x8d99a4, -0.2);
+  c.fill();
+  c.strokeStyle = INK;
+  c.lineWidth = 1.3;
+  c.stroke();
+  c.fillStyle = 'rgba(255,255,255,0.8)';
+  c.beginPath();
+  c.arc(x - hr * 0.35, y - hr * 0.35, hr * 0.32, 0, Math.PI * 2);
+  c.fill();
+}
+
+/** Fixed top-left light for a round part that rotates underneath it. */
+function discLight(c: Ctx, x: number, y: number, r: number) {
+  c.save();
+  c.beginPath();
+  c.arc(x, y, r, 0, Math.PI * 2);
+  c.clip();
+  // Shadow crescent on the lower right, hatched.
+  c.save();
+  c.beginPath();
+  c.rect(x - r, y - r, r * 2, r * 2);
+  c.moveTo(x - r * 0.22 + r * 1.02, y - r * 0.28);
+  c.arc(x - r * 0.22, y - r * 0.28, r * 1.02, 0, Math.PI * 2, true);
+  c.clip('evenodd');
+  c.fillStyle = 'rgba(28,14,10,0.42)';
+  c.fillRect(x - r, y - r, r * 2, r * 2);
+  hatch(c, x - r, y - r, r * 2, r * 2, 3.5, 0.45, 1.1);
+  c.restore();
+  // Light crescent on the upper left.
+  c.strokeStyle = 'rgba(255,250,230,0.55)';
+  c.lineWidth = 2;
+  c.beginPath();
+  c.arc(x, y, r - 1.6, Math.PI * 1.0, Math.PI * 1.65);
+  c.stroke();
+  c.restore();
+}
+
+/** A soft, blurred dark shape for drop shadows (drawn off-canvas, only its blur lands here). */
+function softShadow(c: Ctx, blur: number, draw: (c: Ctx) => void) {
+  c.save();
+  c.shadowColor = 'rgba(24,10,4,1)';
+  c.shadowBlur = blur;
+  c.shadowOffsetX = 1000;
+  c.translate(-1000, 0);
+  c.fillStyle = '#000';
+  c.strokeStyle = '#000';
+  draw(c);
+  c.restore();
+}
+
 function makeGrabber(scene: Phaser.Scene) {
+  // Base plate with hazard corners and the fixed turret housing (bevelled, two-tone).
   {
     const [ctx, tex] = canvas(scene, 'inserter-base', TILE, TILE);
-    box(ctx, 13, 12, 38, 34, 8, 7, 0x4d525c, { k: 3, lw: 3.5, seed: 91, shadow: 5 });
+    box(ctx, 9, 10, 46, 36, 8, 7, 0x4d525c, { k: 3, lw: 3.5, seed: 91, shadow: 6 });
     for (const [x, y, sx, sy] of [
-      [13, 12, 1, 1],
-      [51, 12, -1, 1],
-      [13, 46, 1, -1],
-      [51, 46, -1, -1],
+      [9, 10, 1, 1],
+      [55, 10, -1, 1],
+      [9, 46, 1, -1],
+      [55, 46, -1, -1],
     ] as const) {
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(x + sx * 2, y + sy * 2);
-      ctx.lineTo(x + sx * 12, y + sy * 2);
-      ctx.lineTo(x + sx * 2, y + sy * 12);
+      ctx.lineTo(x + sx * 13, y + sy * 2);
+      ctx.lineTo(x + sx * 2, y + sy * 13);
       ctx.closePath();
       ctx.clip();
-      stripes(ctx, x - 12, y - 12, 24, 24, 6);
+      stripes(ctx, x - 14, y - 14, 28, 28, 6);
       ctx.restore();
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x + sx * 13, y + sy * 2);
+      ctx.lineTo(x + sx * 2, y + sy * 13);
+      ctx.stroke();
     }
     rivets(ctx, [
-      [19, 18],
-      [45, 18],
-      [19, 40],
-      [45, 40],
-    ], 1.8);
-    cel(ctx, circle(32, 29, 13), 0x2b2326, { k: 1, lw: 3, drop: 0, hatch: false });
+      [16, 17],
+      [48, 17],
+      [16, 39],
+      [48, 39],
+    ], 1.9);
+    // Housing: a squat dark drum with a bevelled steel rim, the slewing ring sits in it.
+    drum(ctx, 32, HUB_Y, 18.5, 4, 0x3a3f48, { k: 2, lw: 3, shadow: 3 });
+    ctx.strokeStyle = css(0xb9c3cc, 0.2);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(32, HUB_Y, 17, Math.PI * 0.95, Math.PI * 1.7);
+    ctx.stroke();
+    ctx.fillStyle = '#17110f';
+    ctx.beginPath();
+    ctx.arc(32, HUB_Y, 16, 0, Math.PI * 2);
+    ctx.fill();
     tex.refresh();
   }
+  // Slewing ring: steel annulus with bolts and a hazard segment so its rotation reads.
   {
-    const [c, t] = canvas(scene, 'inserter-turret', 32, 32);
-    cel(c, circle(16, 16, 12), PALETTE.hazard, { k: 2.5, lw: 3, drop: 0 });
+    const [c, t] = canvas(scene, 'inserter-ring', 36, 36);
+    const R = 16.5;
     c.fillStyle = INK;
     c.beginPath();
-    c.roundRect(12.5, 3, 7, 11, 2);
+    c.arc(18, 18, R + 1.3, 0, Math.PI * 2);
     c.fill();
-    rivets(c, [[16, 18]], 2.6);
+    c.fillStyle = css(0x9aa6b1);
+    c.beginPath();
+    c.arc(18, 18, R, 0, Math.PI * 2);
+    c.fill();
+    // Hazard segment at the back.
+    c.save();
+    c.beginPath();
+    c.moveTo(18, 18);
+    c.arc(18, 18, R, Math.PI * 0.3, Math.PI * 0.7);
+    c.closePath();
+    c.clip();
+    stripes(c, 0, 0, 36, 36, 5);
+    c.restore();
+    c.strokeStyle = INK;
+    c.lineWidth = 1.2;
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      c.beginPath();
+      c.moveTo(18 + Math.cos(a) * (R - 2.2), 18 + Math.sin(a) * (R - 2.2));
+      c.lineTo(18 + Math.cos(a) * R, 18 + Math.sin(a) * R);
+      c.stroke();
+    }
+    c.fillStyle = INK;
+    c.beginPath();
+    c.arc(18, 18, R - 3.4, 0, Math.PI * 2);
+    c.fill();
+    t.refresh();
+    const [c2, t2] = canvas(scene, 'inserter-ring-light', 36, 36);
+    discLight(c2, 18, 18, R);
+    t2.refresh();
+  }
+  // Shoulder turret: a yellow cap the upper arm slides out from under, with a counterweight lip.
+  {
+    const [c, t] = canvas(scene, 'inserter-turret', 32, 32);
+    const r = 12.5;
+    c.fillStyle = INK;
+    c.beginPath();
+    c.arc(16, 16, r + 1.5, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = css(PALETTE.hazard, -0.08);
+    c.beginPath();
+    c.arc(16, 16, r, 0, Math.PI * 2);
+    c.fill();
+    // Raised top face inside a bevelled rim.
+    c.fillStyle = css(PALETTE.hazard, 0.12);
+    c.beginPath();
+    c.arc(16, 16, r - 2.6, 0, Math.PI * 2);
+    c.fill();
+    // Counterweight: a dark lip at the back with two bolts.
+    c.fillStyle = css(PALETTE.hazard, -0.45);
+    c.beginPath();
+    c.arc(16, 16, r, Math.PI * 0.3, Math.PI * 0.7);
+    c.arc(16, 16, r - 2.6, Math.PI * 0.7, Math.PI * 0.3, true);
+    c.closePath();
+    c.fill();
+    t.refresh();
+    const [c2, t2] = canvas(scene, 'inserter-turret-light', 32, 32);
+    discLight(c2, 16, 16, r);
+    t2.refresh();
+  }
+  // Arm segments, pointing north, pivot at the bottom.
+  {
+    const [c, t] = canvas(scene, 'inserter-upper', 26, UPPER_L + 24);
+    armSegment(c, 13, UPPER_L + 12, 8.5, 12, 7, PALETTE.hazard, 92, false);
+    t.refresh();
+    const [c2, t2] = canvas(scene, 'inserter-fore', 22, FORE_L + 22);
+    armSegment(c2, 11, FORE_L + 11, 7, 11, 5.8, 0x8d99a4, 93);
+    // Hydraulic hose clipped along the left edge.
+    c2.strokeStyle = INK;
+    c2.lineWidth = 2.6;
+    c2.beginPath();
+    c2.moveTo(5.2, FORE_L + 6);
+    c2.quadraticCurveTo(3.4, FORE_L / 2 + 11, 6, 16);
+    c2.stroke();
+    c2.strokeStyle = '#c4361e';
+    c2.lineWidth = 1.2;
+    c2.stroke();
+    t2.refresh();
+  }
+  // Hydraulic piston: a cylinder and a chrome rod, each anchored at its own eye (bottom).
+  {
+    const [c, t] = canvas(scene, 'inserter-cyl', 12, 24);
+    cel(c, rrect(3.2, 4, 5.6, 16, 2.2), 0x3d434c, { k: 0.6, lw: 1.8, drop: 0, hatch: false });
+    c.fillStyle = 'rgba(255,255,255,0.4)';
+    c.fillRect(4.6, 7, 1.2, 11);
+    cel(c, rrect(2.4, 2.5, 7.2, 4, 1.5), 0xb9c3cc, { k: 0.6, lw: 1.6, drop: 0, hatch: false });
+    c.fillStyle = INK;
+    c.beginPath();
+    c.arc(6, 20.5, 3.3, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = css(0xb9c3cc);
+    c.beginPath();
+    c.arc(6, 20.5, 1.6, 0, Math.PI * 2);
+    c.fill();
+    t.refresh();
+    const [c2, t2] = canvas(scene, 'inserter-rod', 8, 24);
+    c2.fillStyle = INK;
+    c2.fillRect(2, 1, 4, 20);
+    c2.fillStyle = '#e6ecef';
+    c2.fillRect(2.9, 1.5, 2.2, 19);
+    c2.fillStyle = 'rgba(120,135,150,0.7)';
+    c2.fillRect(4.3, 1.5, 0.8, 19);
+    c2.fillStyle = INK;
+    c2.beginPath();
+    c2.arc(4, 20.5, 3, 0, Math.PI * 2);
+    c2.fill();
+    c2.fillStyle = css(0xb9c3cc);
+    c2.beginPath();
+    c2.arc(4, 20.5, 1.4, 0, Math.PI * 2);
+    c2.fill();
+    t2.refresh();
+  }
+  // Bolt caps for the shoulder (red rim) and the elbow / wrist (steel).
+  {
+    const [c, t] = canvas(scene, 'inserter-pivot-big', 20, 20);
+    pivotCap(c, 10, 10, 6, 0xc4361e);
+    t.refresh();
+    const [c2, t2] = canvas(scene, 'inserter-pivot', 16, 16);
+    pivotCap(c2, 8, 8, 5.4, 0xb9c3cc);
+    t2.refresh();
+  }
+  // Wrist housing: origin at the wrist joint, knuckle pins either side, pointing north.
+  {
+    const [c, t] = canvas(scene, 'inserter-wrist', 32, 24);
+    const ox = 16;
+    const oy = 18;
+    const body: PathFn = (k, x, y) => {
+      k.moveTo(ox - 13 + x, oy - KNUCKLE_FWD - 4 + y);
+      k.lineTo(ox + 13 + x, oy - KNUCKLE_FWD - 4 + y);
+      k.lineTo(ox + 12 + x, oy - KNUCKLE_FWD + 5 + y);
+      k.lineTo(ox + 6 + x, oy + 3 + y);
+      k.lineTo(ox - 6 + x, oy + 3 + y);
+      k.lineTo(ox - 12 + x, oy - KNUCKLE_FWD + 5 + y);
+      k.closePath();
+    };
+    clipTo(c, body, () => {
+      c.fillStyle = css(0x4d525c, -0.45);
+      c.fillRect(0, 0, 32, 24);
+      c.fillStyle = css(0x4d525c);
+      c.fillRect(ox - 10, oy - KNUCKLE_FWD - 2, 20, 9);
+      stripes(c, 0, oy - KNUCKLE_FWD - 4, 32, 2.6, 5);
+    });
+    inkStroke(c, body, 2.3);
+    rivets(c, [
+      [ox - KNUCKLE, oy - KNUCKLE_FWD],
+      [ox + KNUCKLE, oy - KNUCKLE_FWD],
+    ], 1.5);
     t.refresh();
   }
-  // Arm segments, pointing north, pivot joint at the bottom.
-  const seg = (key: string, w: number, base: number, line: boolean) => {
-    const H = ARM_L + 18;
-    const [c, t] = canvas(scene, key, 20, H);
-    cel(c, rrect(10 - w / 2, 7, w, ARM_L + 4, w / 2), base, { k: 1.5, lw: 2.6, drop: 0, hatch: true });
-    if (line) {
+  // Fingers: chunky hooked jaws with a red grip pad, pivot at the knuckle, hook pointing inward.
+  {
+    const finger = (key: string, mirror: boolean) => {
+      const [c, t] = canvas(scene, key, 18, 30);
+      c.save();
+      if (mirror) {
+        c.translate(18, 0);
+        c.scale(-1, 1);
+      }
+      // Pivot at (8, 23); the right-hand finger hooks toward -x.
+      const px = 8;
+      const py = 23;
+      const F = 0.85;
+      const pts = ([
+        [-4, 1],
+        [-3.5, -7],
+        [-4.5, -14],
+        [-7, -18],
+        [-5, -21.5],
+        [1, -21],
+        [5.5, -15],
+        [6.2, -6],
+        [4.5, 1.5],
+      ] as [number, number][]).map(([x, y]) => [px + x * F, py + y * F] as [number, number]);
+      cel(c, poly(pts), 0x9aa6b1, { k: 1.1, lw: 2.3, drop: 0, hatch: true });
+      // Red grip pad on the inner hook face.
+      c.fillStyle = '#c4361e';
       c.strokeStyle = INK;
-      c.lineWidth = 2;
+      c.lineWidth = 1.4;
       c.beginPath();
-      c.moveTo(10 + w / 2 - 3, 14);
-      c.lineTo(10 + w / 2 - 3, ARM_L + 2);
-      c.stroke();
-      c.strokeStyle = '#c4361e';
-      c.lineWidth = 1;
-      c.stroke();
-    }
-    for (const y of [9, 9 + ARM_L]) {
-      cel(c, circle(10, y, 6.2), 0xb9c3cc, { k: 1.2, lw: 2.4, drop: 0, hatch: false });
-      c.fillStyle = INK;
-      c.beginPath();
-      c.arc(10, y, 2, 0, Math.PI * 2);
-      c.fill();
-    }
-    t.refresh();
-  };
-  seg('inserter-upper', 12, PALETTE.hazard, true);
-  seg('inserter-fore', 9, 0x8d99a4, false);
-  // Claw: wrist at the bottom centre, two fingers reaching forward.
-  const claw = (key: string, spread: number) => {
-    const [c, t] = canvas(scene, key, 36, 32);
-    for (const s of [-1, 1]) {
-      const bx = 18 + s * 5;
-      const tx = 18 + s * spread;
-      cel(
-        c,
-        poly([
-          [bx - 3, 22],
-          [bx + 3, 22],
-          [tx + 2.5 - s * 1, 5],
-          [tx - s * 3, 2],
-          [tx - 2.5 - s * 1, 6],
-        ]),
-        0x8d99a4,
-        { k: 1, lw: 2.3, drop: 0, hatch: false },
-      );
-      c.fillStyle = css(PALETTE.hazard);
-      c.strokeStyle = INK;
-      c.lineWidth = 2;
-      c.beginPath();
-      c.arc(tx - s * 0.5, 5, 2.6, 0, Math.PI * 2);
+      c.moveTo(px - 3.4 * F, py - 9 * F);
+      c.lineTo(px - 4.3 * F, py - 14.5 * F);
+      c.lineTo(px - 6.4 * F, py - 17.6 * F);
+      c.lineTo(px - 3.6 * F, py - 17 * F);
+      c.lineTo(px - 1.6 * F, py - 13.5 * F);
+      c.lineTo(px - 1.2 * F, py - 9 * F);
+      c.closePath();
       c.fill();
       c.stroke();
-    }
-    cel(c, rrect(9, 19, 18, 9, 3), 0x4d525c, { k: 1, lw: 2.5, drop: 0, hatch: false });
+      c.restore();
+      t.refresh();
+    };
+    finger('inserter-finger-r', false);
+    finger('inserter-finger-l', true);
+  }
+  // Soft drop shadows: a capsule per segment and a claw-shaped blob.
+  {
+    const [c, t] = canvas(scene, 'inserter-sh-fore', 30, FORE_L + 30);
+    softShadow(c, 4, (k) => {
+      k.lineCap = 'round';
+      k.lineWidth = 12;
+      k.beginPath();
+      k.moveTo(15, FORE_L + 15);
+      k.lineTo(15, 15);
+      k.stroke();
+    });
     t.refresh();
-  };
-  claw('inserter-claw-open', 13);
-  claw('inserter-claw-shut', 7);
-  // Toolbar / placement icon: the base with the arm folded over it.
+    const [c3, t3] = canvas(scene, 'inserter-sh-upper', 30, UPPER_L + 30);
+    softShadow(c3, 4, (k) => {
+      k.lineCap = 'round';
+      k.lineWidth = 12;
+      k.beginPath();
+      k.moveTo(15, UPPER_L + 15 - 13);
+      k.lineTo(15, 15);
+      k.stroke();
+    });
+    t3.refresh();
+    const [c2, t2] = canvas(scene, 'inserter-sh-claw', 40, 40);
+    softShadow(c2, 4, (k) => {
+      k.beginPath();
+      k.roundRect(8, 18, 24, 10, 4);
+      k.fill();
+      k.lineCap = 'round';
+      k.lineWidth = 6;
+      for (const s of [-1, 1]) {
+        k.beginPath();
+        k.moveTo(20 + s * 9, 22);
+        k.lineTo(20 + s * 9, 8);
+        k.lineTo(20 + s * 5, 5);
+        k.stroke();
+      }
+    });
+    t2.refresh();
+  }
+  // Toolbar / placement icon: the whole machine, slightly reduced, arm folded with the claw open.
   {
     const [c, t] = canvas(scene, 'inserter-icon', TILE, TILE);
     const src = (k: string) => scene.textures.get(k).getSourceImage() as HTMLCanvasElement;
+    const put = (k: string, x: number, y: number, rot: number, ox: number, oy: number, sc = 1) => {
+      const im = src(k);
+      c.save();
+      c.translate(x, y);
+      c.rotate(rot);
+      c.scale(sc, sc);
+      c.drawImage(im, -im.width * ox, -im.height * oy);
+      c.restore();
+    };
+    c.save();
+    c.translate(1, 15);
+    c.scale(0.76, 0.76);
+    const sx = 32;
+    const sy = HUB_Y;
+    const a1 = -0.3;
+    const ex = sx + Math.cos(a1) * UPPER_L;
+    const ey = sy + Math.sin(a1) * UPPER_L;
+    const a2 = -2.45;
+    const wx = ex + Math.cos(a2) * FORE_L;
+    const wy = ey + Math.sin(a2) * FORE_L;
+    const r1 = a1 + Math.PI / 2;
+    const wr = a2 + Math.PI / 2;
     c.drawImage(src('inserter-base'), 0, 0);
-    c.save();
-    c.translate(32, 29);
-    c.rotate(0.5);
-    c.drawImage(src('inserter-upper'), -10, -(ARM_L + 9));
+    put('inserter-ring', sx, sy, 0.4, 0.5, 0.5);
+    c.drawImage(src('inserter-ring-light'), sx - 18, sy - 18);
+    put('inserter-upper', sx, sy, r1, 0.5, (UPPER_L + 12) / (UPPER_L + 24));
+    put('inserter-turret', sx, sy, r1, 0.5, 0.5);
+    c.drawImage(src('inserter-turret-light'), sx - 16, sy - 16);
+    put('inserter-fore', ex, ey, wr, 0.5, (FORE_L + 11) / (FORE_L + 22));
+    const ux = Math.cos(a1);
+    const uy = Math.sin(a1);
+    const p1x = sx + ux * 7;
+    const p1y = sy + uy * 7;
+    const p2x = ex + uy * 5 + Math.cos(a2) * 4;
+    const p2y = ey - ux * 5 + Math.sin(a2) * 4;
+    const pa = Math.atan2(p2y - p1y, p2x - p1x);
+    put('inserter-rod', p2x, p2y, pa - Math.PI / 2, 0.5, 20.5 / 24);
+    put('inserter-cyl', p1x, p1y, pa + Math.PI / 2, 0.5, 20.5 / 24);
+    put('inserter-wrist', wx, wy, wr, 0.5, 18 / 24);
+    const rx = Math.cos(wr);
+    const ry = Math.sin(wr);
+    for (const s of [-1, 1]) {
+      const kx = wx + rx * s * KNUCKLE + Math.cos(a2) * KNUCKLE_FWD;
+      const ky = wy + ry * s * KNUCKLE + Math.sin(a2) * KNUCKLE_FWD;
+      put(s > 0 ? 'inserter-finger-r' : 'inserter-finger-l', kx, ky, wr + s * 0.32, s > 0 ? 8 / 18 : 10 / 18, 23 / 30);
+    }
+    put('inserter-pivot', ex, ey, 0, 0.5, 0.5);
+    put('inserter-pivot', wx, wy, 0, 0.5, 0.5, 0.75);
+    put('inserter-pivot-big', sx, sy, 0, 0.5, 0.5);
     c.restore();
-    c.save();
-    c.translate(32 + Math.sin(0.5) * ARM_L, 29 - Math.cos(0.5) * ARM_L);
-    c.rotate(-1.2);
-    c.drawImage(src('inserter-fore'), -10, -(ARM_L + 9));
-    c.restore();
-    c.drawImage(src('inserter-turret'), 16, 13);
     t.refresh();
   }
 }
@@ -1962,22 +2352,44 @@ function cargoDropView(h: MachineHost, e: Entity): View {
 }
 
 function grabberView(h: MachineHost, e: Entity): View {
-  const { scene } = h;
+  const { scene, fx } = h;
   const cx = (e.x + 0.5) * TILE;
   const cy = (e.y + 0.5) * TILE;
-  const by = cy - 3;
-  const base = scene.add.image(cx, cy, 'inserter-base').setDepth(5);
-  const pivotY = (ARM_L + 9) / (ARM_L + 18);
-  const upper = scene.add.image(cx, by, 'inserter-upper').setOrigin(0.5, pivotY).setDepth(6);
-  const fore = scene.add.image(cx, by, 'inserter-fore').setOrigin(0.5, pivotY).setDepth(6.1);
-  const heldShadow = scene.add.image(cx, cy, 'glow').setDepth(5.9).setTint(0x000000).setScale(0.32).setVisible(false);
-  const held = scene.add.image(cx, cy, 'px').setDepth(6.15).setVisible(false);
-  const claw = scene.add.image(cx, by, 'inserter-claw-open').setOrigin(0.5, 23.5 / 32).setDepth(6.2);
-  const turret = scene.add.image(cx, by, 'inserter-turret').setDepth(6.3);
+  const sx = cx;
+  const sy = cy - 32 + HUB_Y;
+  const D = 5;
+  const base = scene.add.image(cx, cy, 'inserter-base').setDepth(D);
+  const ring = scene.add.image(sx, sy, 'inserter-ring').setDepth(D + 0.01);
+  const ringLight = scene.add.image(sx, sy, 'inserter-ring-light').setDepth(D + 0.015);
+  const lamp = makeLamp(scene, cx - 17, cy + 16, D + 0.012, 0.6);
+  // The upper arm slides out from under the turret cap.
+  const upper = scene.add.image(sx, sy, 'inserter-upper').setOrigin(0.5, (UPPER_L + 12) / (UPPER_L + 24)).setDepth(D + 0.03);
+  const turret = scene.add.image(sx, sy, 'inserter-turret').setDepth(D + 0.04);
+  const turretLight = scene.add.image(sx, sy, 'inserter-turret-light').setDepth(D + 0.045);
+  // Soft shadows on the ground and the base plate (not on the turret): one per segment plus the claw.
+  const shUpper = scene.add.image(sx, sy, 'inserter-sh-upper').setOrigin(0.5, (UPPER_L + 15) / (UPPER_L + 30)).setDepth(D + 0.025).setAlpha(0.34);
+  const shFore = scene.add.image(sx, sy, 'inserter-sh-fore').setOrigin(0.5, (FORE_L + 15) / (FORE_L + 30)).setDepth(D + 0.025).setAlpha(0.34);
+  const shClaw = scene.add.image(sx, sy, 'inserter-sh-claw').setOrigin(0.5, 22 / 40).setDepth(D + 0.025).setAlpha(0.34);
+  const heldShadow = scene.add.image(cx, cy, 'glow').setDepth(D + 0.025).setTint(0x000000).setScale(0.3).setVisible(false);
+  const rod = scene.add.image(sx, sy, 'inserter-rod').setOrigin(0.5, 20.5 / 24).setDepth(6.045);
+  const cyl = scene.add.image(sx, sy, 'inserter-cyl').setOrigin(0.5, 20.5 / 24).setDepth(6.046);
+  const fore = scene.add.image(sx, sy, 'inserter-fore').setOrigin(0.5, (FORE_L + 11) / (FORE_L + 22)).setDepth(6.04);
+  const elbow = scene.add.image(sx, sy, 'inserter-pivot').setDepth(6.05);
+  const wrist = scene.add.image(sx, sy, 'inserter-wrist').setOrigin(0.5, 18 / 24).setDepth(6.06);
+  const held = scene.add.image(sx, sy, 'px').setDepth(6.07).setVisible(false);
+  const fingerL = scene.add.image(sx, sy, 'inserter-finger-l').setOrigin(10 / 18, 23 / 30).setDepth(6.08);
+  const fingerR = scene.add.image(sx, sy, 'inserter-finger-r').setOrigin(8 / 18, 23 / 30).setDepth(6.08);
+  const wristCap = scene.add.image(sx, sy, 'inserter-pivot').setDepth(6.09).setScale(0.75);
+  const shoulder = scene.add.image(sx, sy, 'inserter-pivot-big').setDepth(6.1);
+  const dt = clock();
+  let open = 1;
+  let squash = 0;
+  let prevHeld: ItemId | null | undefined;
   return {
-    parts: [base, upper, fore, heldShadow, held, claw, turret],
-    update: (ins) => {
+    parts: [base, ring, ringLight, turret, turretLight, ...lampParts(lamp), shUpper, shFore, shClaw, heldShadow, upper, rod, cyl, fore, elbow, wrist, held, fingerL, fingerR, wristCap, shoulder],
+    update: (ins, time) => {
       if (ins.kind !== 'inserter') return;
+      const d = dt(time);
       const drop = ins.dir * 90;
       const pick = drop + 180;
       const t = ins.t <= 0.5 ? ins.t * 2 : 2 - ins.t * 2;
@@ -1985,29 +2397,91 @@ function grabberView(h: MachineHost, e: Entity): View {
       const te = t * t * (3 - 2 * t);
       const a = Phaser.Math.DegToRad(Phaser.Math.Linear(pick, drop + 360, te) - 90);
       const lift = Math.sin(Math.PI * te);
-      // Reach: full at both ends, tucked in mid-swing. Two-bone IK with a fixed elbow side.
-      const reach = 46 - lift * 13;
-      const bend = Math.acos(Math.min(1, reach / (2 * ARM_L)));
+      // Grab / release: a short squash and a puff of dust where the claw meets the goods.
+      const event = prevHeld !== undefined && prevHeld !== ins.held;
+      if (event) squash = 1;
+      prevHeld = ins.held;
+      squash = approach(squash, 0, 11, d);
+      const q = squash * Math.cos((1 - squash) * Math.PI * 1.5);
+      open = approach(open, ins.held ? 0 : 1, 22, d);
+      // Two-bone IK with a fixed elbow side: full reach at both ends, tucked in mid-swing.
+      const reach = 38 - lift * 10 - squash * 2;
+      // Law of cosines: shoulder angle between the reach line and the upper arm.
+      const bend = Math.acos(Phaser.Math.Clamp((UPPER_L * UPPER_L + reach * reach - FORE_L * FORE_L) / (2 * UPPER_L * reach), -1, 1));
       const a1 = a - bend;
-      const ex = cx + Math.cos(a1) * ARM_L;
-      const ey = by + Math.sin(a1) * ARM_L;
-      const wx = cx + Math.cos(a) * reach;
-      const wy = by + Math.sin(a) * reach;
+      const ux = Math.cos(a1);
+      const uy = Math.sin(a1);
+      const ex = sx + ux * UPPER_L;
+      const ey = sy + uy * UPPER_L;
+      const wx = sx + Math.cos(a) * reach;
+      const wy = sy + Math.sin(a) * reach;
       const a2 = Math.atan2(wy - ey, wx - ex);
-      const s = 1 + lift * 0.12;
-      upper.setRotation(a1 + Math.PI / 2);
-      fore.setPosition(ex, ey).setRotation(a2 + Math.PI / 2).setScale(s);
-      claw.setPosition(wx, wy).setRotation(a + Math.PI / 2).setScale(s).setTexture(ins.held ? 'inserter-claw-shut' : 'inserter-claw-open');
-      turret.setRotation(a + Math.PI / 2);
+      const fxv = Math.cos(a2);
+      const fyv = Math.sin(a2);
+      const s = (1 + lift * 0.1) * (1 - squash * 0.06);
+      const r1 = a1 + Math.PI / 2;
+      const r2 = a2 + Math.PI / 2;
+      const ra = a + Math.PI / 2;
+      ring.setRotation(r1);
+      turret.setRotation(r1);
+      upper.setPosition(sx, sy).setRotation(r1);
+      fore.setPosition(ex, ey).setRotation(r2).setScale(s);
+      elbow.setPosition(ex, ey).setScale(0.95 + lift * 0.08);
+      // Hydraulic ram along the upper arm: cylinder from the shoulder, rod to a lug beside the elbow.
+      const nx = uy;
+      const ny = -ux;
+      const p1x = sx + ux * 7;
+      const p1y = sy + uy * 7;
+      const p2x = ex + nx * 5 + fxv * 4;
+      const p2y = ey + ny * 5 + fyv * 4;
+      const pa = Math.atan2(p2y - p1y, p2x - p1x);
+      cyl.setPosition(p1x, p1y).setRotation(pa + Math.PI / 2);
+      rod.setPosition(p2x, p2y).setRotation(pa - Math.PI / 2);
+      // Claw: wrist housing with two fingers that swing open and shut on their knuckles.
+      const sq = 1 + q * 0.22;
+      const sqy = 1 - q * 0.2;
+      wrist.setPosition(wx, wy).setRotation(ra).setScale(s * sq, s * sqy);
+      wristCap.setPosition(wx, wy).setScale(0.75 * s);
+      const fwx = Math.cos(a);
+      const fwy = Math.sin(a);
+      const rx = Math.cos(ra);
+      const ry = Math.sin(ra);
+      const spread = 0.04 + open * 0.34;
+      for (const [f, side] of [
+        [fingerL, -1],
+        [fingerR, 1],
+      ] as const) {
+        const kx = wx + (rx * side * KNUCKLE * sq + fwx * KNUCKLE_FWD * sqy) * s;
+        const ky = wy + (ry * side * KNUCKLE * sq + fwy * KNUCKLE_FWD * sqy) * s;
+        f.setPosition(kx, ky).setRotation(ra + side * spread).setScale(s * sq, s * sqy);
+      }
+      if (event) {
+        const gx = wx + fwx * GRIP;
+        const gy = wy + fwy * GRIP;
+        fx.spawn('fx-dustring', gx, gy + 3, { life: 0.32, s0: 0.12, s1: 0.32, a0: 0.8, a1: 0, rot: 0, depth: 5.02 });
+        for (let i = 0; i < 3; i++) {
+          const da = Math.random() * Math.PI * 2;
+          fx.spawn('fx-dust', gx + Math.cos(da) * 7, gy + Math.sin(da) * 5 + 2, { vx: Math.cos(da) * 30, vy: Math.sin(da) * 18 - 10, drag: 2.5, life: 0.42, s0: 0.18, s1: 0.38, a0: 0.85, a1: 0, spin: 2, depth: 5.4 });
+        }
+      }
+      // Shadows: offset to the lower right, further when the arm is lifted.
+      const o1 = 3 + lift * 2;
+      const o2 = 4.5 + lift * 6;
+      shUpper.setPosition(sx + o1, sy + o1 * 1.25).setRotation(r1);
+      shFore.setPosition(ex + o2 * 0.9, ey + o2 * 1.15).setRotation(r2).setScale(0.85 * s, s);
+      shClaw.setPosition(wx + o2, wy + o2 * 1.25).setRotation(ra).setScale(s * sq, s * sqy).setAlpha(0.34 - lift * 0.08);
       held.setVisible(!!ins.held);
       heldShadow.setVisible(!!ins.held);
       if (ins.held) {
-        const hx = wx + Math.cos(a) * 11;
-        const hy = wy + Math.sin(a) * 11;
+        const hx = wx + fwx * GRIP * s;
+        const hy = wy + fwy * GRIP * s;
         if (held.texture.key !== `item-${ins.held}`) held.setTexture(`item-${ins.held}`);
-        held.setPosition(hx, hy).setScale(0.9 * s);
-        heldShadow.setPosition(hx + 3 + lift * 6, hy + 4 + lift * 8).setAlpha(0.45 - lift * 0.2);
+        held.setPosition(hx, hy).setScale(0.72 * s).setRotation(ra * 0.15);
+        heldShadow.setPosition(hx + o2 + 2, hy + o2 * 1.25 + 2).setAlpha(0.42 - lift * 0.15);
       }
+      // Status light: green while moving goods, amber pulse while waiting for something to grab.
+      const busy = ins.held !== null || ins.t > 0;
+      setLamp(lamp, busy ? LAMP_GO : LAMP_WAIT, busy ? 1 : 0.5 + 0.5 * Math.sin(time / 300));
     },
   };
 }
