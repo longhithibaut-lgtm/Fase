@@ -116,7 +116,7 @@ export class Hud {
       const s = document.createElement('div');
       s.className = 'slot';
       s.dataset.kind = kind;
-      const key = kind === 'belt' ? 'belt-s-0' : kind === 'inserter' ? 'inserter-base' : kind;
+      const key = kind === 'belt' ? 'belt-s-0' : kind === 'inserter' ? 'inserter-icon' : kind;
       s.innerHTML = `<span class="k">${i + 1}</span><img src="${this.icon(key)}" alt="">`;
       s.onclick = () => this.pickSlot(i);
       s.onmouseenter = () => {

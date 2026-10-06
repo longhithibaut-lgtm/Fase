@@ -3,17 +3,13 @@ import type { Campaign, CampaignEvent } from '../sim/campaign';
 import { BELT_SPEED, BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/world';
 import { Hud } from './hud';
+import { Fx, launchPod, machineView, makeMachines, type View } from './machines';
 import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, makePod, makeSite } from './site';
 import { BELT_FRAMES, TILE, makeShared } from './textures';
 
 const STEP = 1 / 60;
 /** Room kept free around the plot for the HUD, in screen pixels. */
 const MARGIN = { top: 92, bottom: 96, side: 28 };
-
-interface View {
-  parts: Phaser.GameObjects.GameObject[];
-  update(e: Entity, time: number): void;
-}
 
 export class FactoryScene extends Phaser.Scene {
   campaign!: Campaign;
@@ -48,6 +44,7 @@ export class FactoryScene extends Phaser.Scene {
   /** Interior acid tiles of the shown site, where bubbles rise. */
   private acidTiles: [number, number][] = [];
   private nextBubble = 0;
+  fx!: Fx;
 
   constructor(private getCampaign: () => Campaign) {
     super('factory');
@@ -60,6 +57,8 @@ export class FactoryScene extends Phaser.Scene {
   create() {
     this.campaign = this.getCampaign();
     makeShared(this);
+    makeMachines(this);
+    this.fx = new Fx(this);
     makeBackdrop(this);
     makeCable(this);
     makePod(this);
@@ -267,6 +266,7 @@ export class FactoryScene extends Phaser.Scene {
     }
     if (this.campaign.current !== this.shownSite) this.showSite(this.campaign.current);
     for (const ev of this.afterUpdate()) this.onCampaignEvent(ev);
+    this.fx.update(this.game.loop.delta / 1000);
     this.syncEntities(time);
     this.drawItems();
     this.drawCable(time);
@@ -322,15 +322,7 @@ export class FactoryScene extends Phaser.Scene {
   private launchPod(item: ItemId) {
     const c = this.elevatorCenter();
     if (!c) return;
-    const pod = this.add.container(c[0], c[1] - 10).setDepth(9);
-    pod.add([this.add.image(0, 0, 'cable-pod'), this.add.image(0, -2, `item-${item}`).setScale(0.62)]);
-    this.tweens.add({
-      targets: pod,
-      y: this.cameras.main.worldView.y - 80,
-      duration: 1600,
-      ease: 'Quad.easeIn',
-      onComplete: () => pod.destroy(),
-    });
+    launchPod(this, this.fx, c[0], c[1], item, this.cameras.main.worldView.y - 80);
   }
 
   private syncEntities(time: number) {
@@ -370,79 +362,8 @@ export class FactoryScene extends Phaser.Scene {
           },
         };
       }
-      case 'inserter': {
-        const base = this.add.image(cx, cy, 'inserter-base').setDepth(5);
-        const arm = this.add.image(cx, cy, 'inserter-arm').setOrigin(0.5, 0.92).setDepth(6);
-        const held = this.add.image(cx, cy, 'px').setDepth(7).setVisible(false);
-        return {
-          parts: [base, arm, held],
-          update: (ins) => {
-            if (ins.kind !== 'inserter') return;
-            const drop = ins.dir * 90;
-            const pick = drop + 180;
-            const t = ins.t <= 0.5 ? ins.t * 2 : 2 - ins.t * 2;
-            const a = Phaser.Math.Linear(pick, drop + 360, t);
-            arm.setAngle(a);
-            const rad = Phaser.Math.DegToRad(a - 90);
-            held.setVisible(!!ins.held);
-            if (ins.held) held.setTexture(`item-${ins.held}`).setPosition(cx + Math.cos(rad) * 58, cy + Math.sin(rad) * 58);
-          },
-        };
-      }
-      case 'miner':
-      case 'importer': {
-        const body = this.add.image(cx, cy, e.kind).setDepth(4);
-        const head = e.kind === 'miner' ? this.add.image(cx - 2, cy, 'miner-head').setDepth(4.1) : null;
-        const arrow = this.add.image(0, 0, 'arrow').setDepth(4.2).setScale(0.7);
-        return {
-          parts: head ? [body, head, arrow] : [body, arrow],
-          update: (m, time) => {
-            if (m.kind !== 'miner' && m.kind !== 'importer') return;
-            if (head && m.active) head.setAngle((time / 4) % 360);
-            if (m.kind === 'importer') body.setAlpha(m.active ? 1 : 0.45);
-            const [nx, ny] = this.world.minerOutputTile(m);
-            arrow.setPosition((nx + 0.5) * TILE - DX[m.dir] * 20, (ny + 0.5) * TILE - DY[m.dir] * 20).setAngle(m.dir * 90);
-          },
-        };
-      }
-      case 'furnace': {
-        const glow = this.add.image(cx, cy + 10, 'fire').setDepth(3).setScale(3.2).setAlpha(0).setBlendMode(Phaser.BlendModes.ADD);
-        const body = this.add.image(cx, cy, 'furnace').setDepth(4);
-        const fire = this.add.image(cx - 2, cy + 6, 'fire').setDepth(4.1).setScale(0.75, 0.6).setBlendMode(Phaser.BlendModes.ADD);
-        let nextPuff = 0;
-        return {
-          parts: [body, fire, glow],
-          update: (f, time) => {
-            if (f.kind !== 'furnace') return;
-            const flick = 0.75 + Math.sin(time / 70 + f.id) * 0.15 + Math.sin(time / 31 + f.id * 3) * 0.1;
-            fire.setAlpha(f.active ? flick : 0.06);
-            glow.setAlpha(f.active ? flick * 0.3 : 0);
-            if (f.active && time > nextPuff) {
-              nextPuff = time + 700 + ((f.id * 137) % 400);
-              const puff = this.add.image(cx + 35, cy - 48, 'smoke').setDepth(10).setScale(0.4).setAlpha(0.9);
-              this.tweens.add({ targets: puff, y: puff.y - 70, x: puff.x + 18, scale: 1.1, alpha: 0, duration: 2200, onComplete: () => puff.destroy() });
-            }
-          },
-        };
-      }
-      case 'assembler': {
-        const body = this.add.image(cx, cy, 'assembler').setDepth(4);
-        const arm = this.add.image(cx - 3, cy + 4, 'assembler-arm').setDepth(4.1);
-        const icon = this.add.image(cx + 58, cy + 58, 'px').setDepth(4.2).setScale(1.3);
-        return {
-          parts: [body, arm, icon],
-          update: (a, time) => {
-            if (a.kind !== 'assembler') return;
-            if (a.crafting) arm.setAngle((time / 3) % 360);
-            icon.setVisible(!!a.recipe);
-            if (a.recipe) icon.setTexture(`item-${a.recipe.output}`);
-          },
-        };
-      }
-      case 'chest':
-        return { parts: [this.add.image(cx, cy, 'chest').setDepth(4)], update: () => {} };
-      case 'elevator':
-        return { parts: [this.add.image(cx, cy, 'elevator').setDepth(4)], update: () => {} };
+      default:
+        return machineView({ scene: this, world: this.world, fx: this.fx }, e)!;
     }
   }
 
@@ -512,7 +433,7 @@ export class FactoryScene extends Phaser.Scene {
       const size = BUILDINGS[kind].size;
       const cx = (o.x + size / 2) * TILE;
       const cy = (o.y + size / 2) * TILE;
-      const key = kind === 'belt' ? 'belt-s-0' : kind === 'inserter' ? 'inserter-base' : kind;
+      const key = kind === 'belt' ? 'belt-s-0' : kind === 'inserter' ? 'inserter-icon' : kind;
       const ok = w.canPlace(kind, o.x, o.y) || (kind === 'belt' && w.entityAt(t.x, t.y)?.kind === 'belt');
       this.ghost.setVisible(true).setTexture(key).setPosition(cx, cy).setAngle(kind === 'belt' ? this.toolDir * 90 : 0);
       this.ghost.setTint(ok ? 0x9cff9c : 0xff6a5a);

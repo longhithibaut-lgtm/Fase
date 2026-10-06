@@ -186,7 +186,7 @@ export function bolt(ctx: Ctx, x: number, y: number) {
 
 // ---------- items ----------
 
-const ITEM_LOOK: Record<ItemId, number> = {
+export const ITEM_LOOK: Record<ItemId, number> = {
   'ferrite-ore': 0xb5532e,
   'cuprite-ore': 0x35b8a6,
   carbon: 0x34303a,
@@ -344,83 +344,16 @@ export function makeBelts(scene: Phaser.Scene) {
   }
 }
 
-// ---------- buildings ----------
+// ---------- shared bits ----------
 
+/** Generic textures: placement arrow, a white pixel, a soft fire glow, a smoke puff. Machines live in machines.ts. */
 export function makeBuildings(scene: Phaser.Scene) {
-  // Drill 2x2: chunky hazard-yellow chassis with a rotating bit.
   {
-    const S = TILE * 2;
-    const [ctx, tex] = canvas(scene, 'miner', S, S);
-    cel(ctx, rrect(8, 10, S - 18, S - 20, 12), PALETTE.hazard, { k: 8 });
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(8, 10, S - 18, S - 20, 12);
-    ctx.clip();
-    grime(ctx, 8, 10, S - 18, S - 20, 11, 22);
-    ctx.restore();
-    cel(ctx, circle(S / 2 - 2, S / 2, 34), PALETTE.steel, { k: 6, drop: 0 });
-    ctx.fillStyle = '#1e181b';
-    ctx.beginPath();
-    ctx.arc(S / 2 - 2, S / 2, 26, 0, Math.PI * 2);
-    ctx.fill();
-    for (const [x, y] of [
-      [18, 20],
-      [S - 22, 20],
-      [18, S - 22],
-      [S - 22, S - 22],
-    ])
-      bolt(ctx, x, y);
-    tex.refresh();
-    const [c2, t2] = canvas(scene, 'miner-head', 56, 56);
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
-      cel(
-        c2,
-        poly([
-          [28, 28],
-          [28 + Math.cos(a) * 24, 28 + Math.sin(a) * 24],
-          [28 + Math.cos(a + 0.7) * 18, 28 + Math.sin(a + 0.7) * 18],
-        ]),
-        0xb9c3cc,
-        { k: 2, lw: 2.5, drop: 0, hatch: false },
-      );
-    }
-    cel(c2, circle(28, 28, 7), PALETTE.rust, { k: 2, lw: 2.5, drop: 0, hatch: false });
-    t2.refresh();
     const [c3, t3] = canvas(scene, 'arrow', 32, 32);
     cel(c3, poly([[16, 3], [29, 21], [3, 21]]), PALETTE.hazard, { k: 2, lw: 3, drop: 0, hatch: false });
     t3.refresh();
   }
-  // Smelter 2x2: rusted brick kiln with a glowing mouth and a chimney.
   {
-    const S = TILE * 2;
-    const [ctx, tex] = canvas(scene, 'furnace', S, S);
-    cel(ctx, rrect(10, 14, S - 22, S - 24, 16), PALETTE.rust, { k: 9 });
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(10, 14, S - 22, S - 24, 16);
-    ctx.clip();
-    ctx.strokeStyle = 'rgba(28,20,17,0.45)';
-    ctx.lineWidth = 2;
-    for (let y = 22; y < S; y += 14) {
-      ctx.beginPath();
-      ctx.moveTo(10, y);
-      ctx.lineTo(S, y);
-      ctx.stroke();
-      for (let x = 16 + ((y / 14) % 2) * 9; x < S; x += 18) {
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x, y + 14);
-        ctx.stroke();
-      }
-    }
-    grime(ctx, 10, 14, S - 22, S - 24, 23, 20);
-    ctx.restore();
-    cel(ctx, rrect(30, 48, S - 62, 40, 10), 0x2a2023, { k: 3, drop: 0, hatch: false });
-    cel(ctx, rrect(S - 40, 6, 22, 30, 4), PALETTE.steel, { k: 4, lw: 3.5 });
-    ctx.fillStyle = INK;
-    ctx.fillRect(S - 35, 9, 12, 6);
-    tex.refresh();
     const [c2, t2] = canvas(scene, 'fire', 72, 48);
     const g = c2.createRadialGradient(36, 30, 2, 36, 30, 34);
     g.addColorStop(0, 'rgba(255,248,200,1)');
@@ -428,107 +361,6 @@ export function makeBuildings(scene: Phaser.Scene) {
     g.addColorStop(1, 'rgba(255,60,0,0)');
     c2.fillStyle = g;
     c2.fillRect(0, 0, 72, 48);
-    t2.refresh();
-    const [c3, t3] = canvas(scene, 'smoke', 40, 40);
-    cel(c3, poly(blob(20, 20, 15, 5, 9, 1)), 0x8a7f86, { k: 4, lw: 2.5, drop: 0, hatch: false });
-    t3.refresh();
-  }
-  // Fabricator 3x3: steel housing with a hazard collar and a rotating press.
-  {
-    const S = TILE * 3;
-    const [ctx, tex] = canvas(scene, 'assembler', S, S);
-    cel(ctx, rrect(10, 12, S - 22, S - 22, 14), PALETTE.steel, { k: 10 });
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(10, 12, S - 22, S - 22, 14);
-    ctx.clip();
-    grime(ctx, 10, 12, S - 22, S - 22, 37, 30);
-    ctx.restore();
-    hazardBand(ctx, 22, 20, S - 46, 12);
-    cel(ctx, circle(S / 2 - 3, S / 2 + 4, 52), PALETTE.teal, { k: 7, drop: 0 });
-    ctx.fillStyle = '#1e181b';
-    ctx.beginPath();
-    ctx.arc(S / 2 - 3, S / 2 + 4, 42, 0, Math.PI * 2);
-    ctx.fill();
-    for (const [x, y] of [
-      [22, 44],
-      [S - 26, 44],
-      [22, S - 24],
-      [S - 26, S - 24],
-    ])
-      bolt(ctx, x, y);
-    tex.refresh();
-    const [c2, t2] = canvas(scene, 'assembler-arm', 96, 96);
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2;
-      c2.strokeStyle = INK;
-      c2.lineWidth = 11;
-      c2.lineCap = 'round';
-      c2.beginPath();
-      c2.moveTo(48, 48);
-      c2.lineTo(48 + Math.cos(a) * 36, 48 + Math.sin(a) * 36);
-      c2.stroke();
-      c2.strokeStyle = css(0xb9c3cc);
-      c2.lineWidth = 6;
-      c2.stroke();
-    }
-    cel(c2, circle(48, 48, 12), PALETTE.hazard, { k: 3, lw: 3, drop: 0, hatch: false });
-    t2.refresh();
-  }
-  // Crate 1x1.
-  {
-    const [ctx, tex] = canvas(scene, 'chest', TILE, TILE);
-    cel(ctx, rrect(10, 12, TILE - 20, TILE - 22, 4), 0x9a6a3a, { k: 5 });
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(12, 14);
-    ctx.lineTo(TILE - 12, TILE - 12);
-    ctx.moveTo(TILE - 12, 14);
-    ctx.lineTo(12, TILE - 12);
-    ctx.stroke();
-    tex.refresh();
-  }
-  // Orbital elevator 3x3: landing pad with a cable anchor; the cable itself is drawn in the scene.
-  {
-    const S = TILE * 3;
-    const [ctx, tex] = canvas(scene, 'elevator', S, S);
-    cel(ctx, poly([[S / 2, 6], [S - 8, S / 2 - 30], [S - 8, S / 2 + 40], [S / 2, S - 8], [8, S / 2 + 40], [8, S / 2 - 30]]), PALETTE.steel, { k: 10 });
-    hazardBand(ctx, 30, S - 46, S - 60, 14);
-    cel(ctx, circle(S / 2, S / 2, 46), 0x3a3140, { k: 6, drop: 0 });
-    cel(ctx, circle(S / 2, S / 2, 26), PALETTE.hazard, { k: 5, drop: 0 });
-    ctx.fillStyle = INK;
-    ctx.beginPath();
-    ctx.arc(S / 2, S / 2, 10, 0, Math.PI * 2);
-    ctx.fill();
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      bolt(ctx, S / 2 + Math.cos(a) * 37, S / 2 + Math.sin(a) * 37);
-    }
-    tex.refresh();
-  }
-  // Cargo drop 2x2: scorched landing pad with a pod.
-  {
-    const S = TILE * 2;
-    const [ctx, tex] = canvas(scene, 'importer', S, S);
-    ctx.fillStyle = 'rgba(30,18,10,0.35)';
-    ctx.beginPath();
-    ctx.arc(S / 2, S / 2, S / 2 - 4, 0, Math.PI * 2);
-    ctx.fill();
-    cel(ctx, circle(S / 2, S / 2, S / 2 - 16), 0x4b4552, { k: 6 });
-    cel(ctx, poly([[S / 2, 18], [S - 30, S / 2], [S / 2, S - 18], [30, S / 2]]), PALETTE.rust, { k: 5, drop: 0 });
-    hazardBand(ctx, S / 2 - 18, S / 2 - 5, 36, 10);
-    tex.refresh();
-  }
-  // Grabber arm: base and arm.
-  {
-    const [ctx, tex] = canvas(scene, 'inserter-base', TILE, TILE);
-    cel(ctx, circle(TILE / 2, TILE / 2, 15), PALETTE.steel, { k: 4, lw: 3 });
-    cel(ctx, circle(TILE / 2, TILE / 2, 7), PALETTE.hazard, { k: 2, lw: 2.5, drop: 0, hatch: false });
-    tex.refresh();
-    const [c2, t2] = canvas(scene, 'inserter-arm', 22, 74);
-    cel(c2, rrect(6, 10, 10, 60, 4), PALETTE.hazard, { k: 2, lw: 2.5, drop: 0, hatch: false });
-    cel(c2, poly([[2, 12], [20, 12], [16, 2], [6, 2]]), PALETTE.steel, { k: 2, lw: 2.5, drop: 0, hatch: false });
     t2.refresh();
   }
   {
