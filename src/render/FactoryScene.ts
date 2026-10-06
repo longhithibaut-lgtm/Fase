@@ -3,7 +3,7 @@ import { BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type Dir, type Entity, World } from '../sim/world';
 import { BELT_FRAMES, TILE, makeAll } from './textures';
 import { Hud } from './hud';
-import { ORE_VARIANTS } from './ground';
+import { ORE_VARIANTS, ORE_TIERS, oreRichness } from './ground';
 import { hash2 } from '../sim/rng';
 
 const STEP = 1 / 60;
@@ -99,7 +99,14 @@ export class FactoryScene extends Phaser.Scene {
         const o = w.ore[k];
         if (!o) continue;
         const v = Math.floor(hash2(x, y, w.seed + 5) * ORE_VARIANTS);
-        this.oreImages.set(k, this.add.image((x + 0.5) * TILE, (y + 0.5) * TILE, `ore-${o.type}-${v}`).setDepth(1));
+        // Richness plus jitter picks the density tier; edge tiles thin out to sparse pebbles.
+        let n = 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (w.inBounds(x + dx, y + dy) && w.ore[w.idx(x + dx, y + dy)]) n++;
+        const rich = oreRichness(o.amount) * (n < 4 ? 0.45 : 1) + (hash2(x, y, w.seed + 6) - 0.5) * 0.35;
+        const t = Math.max(0, Math.min(ORE_TIERS - 1, Math.round(rich * (ORE_TIERS - 1))));
+        const img = this.add.image((x + 0.5) * TILE, (y + 0.5) * TILE, `ore-${o.type}-${t}-${v}`).setDepth(1);
+        img.setAngle((hash2(x, y, w.seed + 8) - 0.5) * 40);
+        this.oreImages.set(k, img);
       }
   }
 

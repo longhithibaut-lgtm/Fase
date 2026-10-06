@@ -169,9 +169,20 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
     for (let i = 0; i < f.length; i++) f[i] = world.terrain[i] === t ? 1 : 0;
     return sampler(blur(f, tw, th), tw, th);
   });
-  const oreF = new Float32Array(tw * th);
-  for (let i = 0; i < oreF.length; i++) oreF[i] = world.ore[i] ? 1 : 0;
-  const oreS = sampler(blur(blur(oreF, tw, th), tw, th), tw, th);
+  // Per-ore-type stain fields, weighted by richness, blurred so they fade out past the patch edge.
+  const stains = Object.keys(ORE_PAL).map((type) => {
+    const f = new Float32Array(tw * th);
+    let any = false;
+    for (let i = 0; i < f.length; i++) {
+      const o = world.ore[i];
+      if (o && o.type === type) {
+        f[i] = 0.55 + oreRichness(o.amount) * 0.45;
+        any = true;
+      }
+    }
+    return any ? { s: sampler(blur(blur(blur(f, tw, th), tw, th), tw, th), tw, th), c: ORE_PAL[type].stain } : null;
+  }).filter((v): v is { s: (x: number, y: number) => number; c: RGB } => !!v);
+  const nz3 = new Noise(seed * 31 + 9);
   const shore = sampler(shoreDistance(world), tw, th);
   const [wG, wD, wS] = weights;
 
@@ -227,11 +238,38 @@ export function makeTerrain(scene: Phaser.Scene, world: World, px = 32): string 
       mix(PAL.dirt, kd, m, (0.45 - mid) * 2);
       mix(PAL.sand, ks, m, (fine - 0.6) * 2);
 
-      // Small-scale shading: cracks / clumps.
+      // Small-scale shading: clumps.
       const clump = nz2.v(x * 0.12, y * 0.12);
-      let k = 0.86 + grain * 0.16 + (clump - 0.5) * 0.22 + (large - 0.5) * 0.15;
-      // Darken ground under ore patches a little.
-      k *= 1 - oreS(tx0, ty0) * 0.18;
+      let k = 0.86 + grain * 0.12 + (clump - 0.5) * 0.22 + (large - 0.5) * 0.15;
+
+      // Mid-frequency detail: hairline cracks (ridged noise), dark speckle, directional dirt streaks.
+      const dirtiness = kd + ks * 0.6 + kg * 0.35;
+      const cr = Math.abs(nz3.v(x * 0.045 + wx * 3, y * 0.045 + wy * 3) - 0.5);
+      const cr2 = Math.abs(nz3.v(x * 0.11 + 300, y * 0.11 - wx * 4) - 0.5);
+      const crackMask = nz2.v(tx0 * 0.6 + 40, ty0 * 0.6) > 0.5 ? 1 : 0.35;
+      if (cr < 0.022) k *= 1 - (1 - cr / 0.022) * 0.28 * dirtiness * crackMask;
+      else if (cr < 0.04) k *= 1 + 0.05 * dirtiness * crackMask; // lit lip beside crack
+      if (cr2 < 0.012) k *= 1 - (1 - cr2 / 0.012) * 0.18 * dirtiness;
+      const sp = hash2(x >> 1, y >> 1, seed + 3);
+      if (sp > 0.93) k *= 0.78 + (1 - sp) * 1.5;
+      else if (sp < 0.025) k *= 1.12;
+      const streak = nz3.v(x * 0.02 + y * 0.004, y * 0.16);
+      k *= 1 + (streak - 0.5) * 0.16 * (0.4 + dirtiness);
+      // Grass blades: tiny bright/dark flecks on grass only.
+      const gb = hash2(x, y, seed + 11);
+      if (kg > 0.4 && gb > 0.965) { gg *= 1.12; r *= 1.04; } else if (kg > 0.4 && gb < 0.03) k *= 0.85;
+
+      // Ore stain: tinted, darkened soil under patches, noise-eroded so it fades irregularly.
+      for (const st of stains) {
+        let v = st.s(tx0 + wx * 0.3, ty0 + wy * 0.3);
+        if (v < 0.02) continue;
+        v = v + (mid - 0.5) * 0.45 + (fine - 0.5) * 0.15;
+        v = v < 0 ? 0 : v > 1 ? 1 : v;
+        const a = v * v * (3 - 2 * v) * 0.75;
+        r += (st.c[0] - r) * a;
+        gg += (st.c[1] - gg) * a;
+        b += (st.c[2] - b) * a;
+      }
 
       // Shoreline.
       const sd0 = shore(tx, ty) + (fine - 0.5) * 0.25;
@@ -445,14 +483,21 @@ function paintDecor(ctx: Ctx, world: World, px: number, shore: (x: number, y: nu
 
 // ---------- ore ----------
 
-const ORE_PAL: Record<string, { dark: RGB; mid: RGB; light: RGB }> = {
-  'iron-ore': { dark: [44, 58, 74], mid: [80, 98, 118], light: [158, 176, 194] },
-  'copper-ore': { dark: [92, 42, 22], mid: [168, 86, 44], light: [236, 150, 88] },
-  coal: { dark: [12, 12, 12], mid: [34, 34, 36], light: [96, 96, 102] },
-  stone: { dark: [96, 82, 62], mid: [160, 142, 112], light: [222, 206, 172] },
+export const ORE_PAL: Record<string, { dark: RGB; mid: RGB; light: RGB; stain: RGB }> = {
+  'iron-ore': { dark: [44, 58, 74], mid: [80, 98, 118], light: [158, 176, 194], stain: [52, 58, 62] },
+  'copper-ore': { dark: [92, 42, 22], mid: [168, 86, 44], light: [236, 150, 88], stain: [88, 52, 32] },
+  coal: { dark: [12, 12, 12], mid: [34, 34, 36], light: [96, 96, 102], stain: [30, 28, 26] },
+  stone: { dark: [96, 82, 62], mid: [160, 142, 112], light: [222, 206, 172], stain: [128, 110, 84] },
 };
 
-export const ORE_VARIANTS = 6;
+/** 0..1 richness from a tile's ore amount. */
+export function oreRichness(amount: number): number {
+  const v = (amount - 300) / 1300;
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+export const ORE_TIERS = 4;
+export const ORE_VARIANTS = 5;
 /** Ore textures overhang the tile so neighbouring tiles blend into one patch. */
 export const ORE_SIZE = 88;
 
@@ -470,9 +515,6 @@ function chunk(ctx: Ctx, x: number, y: number, r: number, seed: number, p: { dar
     pts.forEach(([px, py], i) => (i ? ctx.lineTo(px + dx, py + dy) : ctx.moveTo(px + dx, py + dy)));
     ctx.closePath();
   };
-  ctx.fillStyle = 'rgba(0,0,0,0.42)';
-  path(r * 0.25, r * 0.35);
-  ctx.fill();
   ctx.fillStyle = rgba(p.dark);
   path();
   ctx.fill();
@@ -508,36 +550,53 @@ function chunk(ctx: Ctx, x: number, y: number, r: number, seed: number, p: { dar
 
 export function makeOre(scene: Phaser.Scene) {
   const S = ORE_SIZE;
-  const pad = (S - 64) / 2;
+  const c = S / 2;
   for (const [ore, p] of Object.entries(ORE_PAL)) {
-    for (let v = 0; v < ORE_VARIANTS; v++) {
-      const [ctx, tex] = canvas(scene, `ore-${ore}-${v}`, S, S);
-      const sd = v * 97 + ore.length * 13;
-      // Faint dusty stain.
-      const g = ctx.createRadialGradient(S / 2, S / 2, 4, S / 2, S / 2, S / 2);
-      g.addColorStop(0, rgba(p.dark, 0.32));
-      g.addColorStop(1, rgba(p.dark, 0));
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, S, S);
-      // Grit specks.
-      for (let i = 0; i < 40; i++) {
-        const x = pad + hash2(i, sd, 51) * 64;
-        const y = pad + hash2(sd, i, 52) * 64;
-        ctx.fillStyle = rgba(hash2(i, sd, 53) > 0.5 ? p.mid : p.dark, 0.8);
-        ctx.fillRect(x, y, 1.5, 1.5);
+    for (let t = 0; t < ORE_TIERS; t++) {
+      const rich = t / (ORE_TIERS - 1); // 0 = sparse edge, 1 = dense core
+      for (let v = 0; v < ORE_VARIANTS; v++) {
+        const [ctx, tex] = canvas(scene, `ore-${ore}-${t}-${v}`, S, S);
+        const sd = v * 97 + t * 1013 + ore.length * 13;
+        // Loose grit around the stones.
+        const grit = 10 + rich * 30;
+        for (let i = 0; i < grit; i++) {
+          const a = hash2(i, sd, 51) * Math.PI * 2;
+          const rr = Math.sqrt(hash2(sd, i, 52)) * (24 + rich * 8);
+          ctx.fillStyle = rgba(hash2(i, sd, 53) > 0.5 ? p.mid : p.dark, 0.55 + hash2(i, sd, 57) * 0.4);
+          const z = 1 + hash2(i, sd, 58) * 1.5;
+          ctx.fillRect(c + Math.cos(a) * rr, c + Math.sin(a) * rr, z, z);
+        }
+        // Chunks: a few big clumped stones at the core, sparse pebbles at the edge.
+        const list: [number, number, number][] = [];
+        const big = t === 0 ? 0 : t === 1 ? 1 : t === 2 ? 3 : 5;
+        const small = [3, 6, 9, 13][t];
+        // Clump centre, offset so stones are not centred on the tile grid.
+        const cx = c + (hash2(sd, 1, 60) - 0.5) * 16;
+        const cy = c + (hash2(sd, 2, 60) - 0.5) * 16;
+        for (let i = 0; i < big; i++) {
+          const a = hash2(i, sd, 61) * Math.PI * 2;
+          const rr = 3 + hash2(sd, i, 62) * (8 + t * 2);
+          list.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, 9 + hash2(i, sd, 63) * (4 + rich * 5)]);
+        }
+        for (let i = 0; i < small; i++) {
+          const a = hash2(i, sd, 64) * Math.PI * 2;
+          const rr = Math.sqrt(hash2(sd, i, 65)) * (26 + rich * 6);
+          list.push([c + Math.cos(a) * rr, c + Math.sin(a) * rr, 2.5 + hash2(i, sd, 66) * (2.5 + rich * 3.5)]);
+        }
+        list.sort((a, b) => a[1] - b[1]);
+        // Soft contact shadows first, then the stones.
+        ctx.save();
+        ctx.filter = 'blur(2px)';
+        for (const [x, y, r] of list) {
+          ctx.fillStyle = 'rgba(10,8,4,0.45)';
+          ctx.beginPath();
+          ctx.ellipse(x + r * 0.35, y + r * 0.45, r * 1.05, r * 0.85, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+        list.forEach(([x, y, r], i) => chunk(ctx, x, y, r, sd + i * 7, p));
+        tex.refresh();
       }
-      // Chunks sorted top to bottom so lower ones overlap.
-      const n = 17 + (v % 3) * 3;
-      const list: [number, number, number][] = [];
-      for (let i = 0; i < n; i++) {
-        const x = pad + 4 + hash2(i, sd, 54) * 56;
-        const y = pad + 4 + hash2(sd, i, 55) * 56;
-        const r = i < 5 ? 8 + hash2(i, sd, 56) * 5 : 3.5 + hash2(i, sd, 56) * 5;
-        list.push([x, y, r]);
-      }
-      list.sort((a, b) => a[1] - b[1]);
-      list.forEach(([x, y, r], i) => chunk(ctx, x, y, r, sd + i * 7, p));
-      tex.refresh();
     }
   }
 }
