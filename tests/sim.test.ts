@@ -1,20 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { World, type Chest, type Belt, type Entity } from '../src/sim/world';
+import { Campaign } from '../src/sim/campaign';
 import type { OreId } from '../src/sim/defs';
+import { buildDemo, playDemos } from '../src/sim/demos';
+import { LEVELS } from '../src/sim/levels';
+import { World, type Belt, type Chest, type Dir, type Entity } from '../src/sim/world';
 
 const DT = 1 / 60;
 
-function run(w: World, seconds: number) {
+function run(w: { update(dt: number): void }, seconds: number) {
   for (let i = 0; i < seconds * 60; i++) w.update(DT);
-}
-
-/** Flat empty test world: no water, no ore. */
-function flat(): World {
-  const w = new World(40, 40, 1);
-  w.terrain.fill('grass');
-  w.ore.fill(null);
-  w.credits = 1e6;
-  return w;
 }
 
 function ore(w: World, x: number, y: number, type: OreId, amount = 1000) {
@@ -26,33 +20,38 @@ function must<T extends Entity>(e: Entity | null): T {
   return e as T;
 }
 
+function line(w: World, x: number, y: number, dir: Dir, n: number) {
+  for (let i = 0; i < n; i++) must(w.place('belt', x + [0, 1, 0, -1][dir] * i, y + [-1, 0, 1, 0][dir] * i, dir));
+}
+
 describe('placement', () => {
-  it('rejects overlap, water and miners without ore', () => {
-    const w = flat();
+  it('rejects overlap, blocked terrain and drills without ore', () => {
+    const w = new World(40, 40);
     must(w.place('furnace', 5, 5));
     expect(w.place('belt', 6, 6)).toBeNull();
     expect(w.place('miner', 10, 10)).toBeNull();
-    w.terrain[w.idx(20, 20)] = 'water';
+    w.terrain[w.idx(20, 20)] = 'acid';
+    w.terrain[w.idx(22, 20)] = 'rock';
     expect(w.place('belt', 20, 20)).toBeNull();
+    expect(w.place('belt', 22, 20)).toBeNull();
   });
 
-  it('charges and refunds credits', () => {
-    const w = flat();
-    w.credits = 100;
-    must(w.place('assembler', 1, 1));
-    expect(w.credits).toBe(20);
-    expect(w.place('assembler', 10, 10)).toBeNull();
-    w.remove(2, 2);
-    expect(w.credits).toBe(100);
+  it('keeps level fixtures in place and scores the parts cost', () => {
+    const w = World.fromLevel(LEVELS[0]);
+    const el = [...w.entities.values()].find((e) => e.kind === 'elevator')!;
+    expect(w.remove(el.x, el.y)).toBeNull();
+    const before = w.cost();
+    must(w.place('assembler', 6, 0));
+    expect(w.cost()).toBe(before + 40);
   });
 });
 
 describe('belts', () => {
   it('moves items along a line and stops at the end without overlapping', () => {
-    const w = flat();
-    ore(w, 0, 0, 'iron-ore');
+    const w = new World(40, 40);
+    ore(w, 0, 0, 'ferrite-ore');
     must(w.place('miner', 0, 0, 1)); // outputs east onto (2,0)
-    for (let x = 2; x < 6; x++) must(w.place('belt', x, 0, 1));
+    line(w, 2, 0, 1, 4);
     run(w, 60);
     const items = [2, 3, 4, 5].flatMap((x) => (w.entityAt(x, 0) as Belt).items.map((i) => x + i.pos));
     expect(items.length).toBeGreaterThan(10);
@@ -62,7 +61,7 @@ describe('belts', () => {
   });
 
   it('treats a single side input as a curve', () => {
-    const w = flat();
+    const w = new World(20, 20);
     must(w.place('belt', 5, 5, 1)); // east
     const corner = must<Belt>(w.place('belt', 6, 5, 2)); // south
     expect(w.isCurve(corner).curve).toBe(true);
@@ -71,60 +70,72 @@ describe('belts', () => {
   });
 });
 
-describe('production chain', () => {
-  it('mines, smelts with coal fuel and stores plates', () => {
-    const w = flat();
-    ore(w, 0, 0, 'iron-ore');
-    ore(w, 0, 4, 'coal');
-    must(w.place('miner', 0, 0, 1)); // iron -> (2,0)
-    must(w.place('miner', 0, 4, 1)); // coal -> (2,4)
-    // Belts carry both to x=4, then north/south into a shared column feeding an inserter.
-    must(w.place('belt', 2, 0, 1));
-    must(w.place('belt', 3, 0, 2));
-    must(w.place('belt', 3, 1, 2));
-    must(w.place('belt', 2, 4, 1));
-    must(w.place('belt', 3, 4, 0));
-    must(w.place('belt', 3, 3, 0));
-    must(w.place('belt', 3, 2, 1)); // merge point heading east
-    must(w.place('inserter', 4, 2, 1));
-    must(w.place('furnace', 5, 2));
-    must(w.place('inserter', 7, 2, 1));
-    const chest = must<Chest>(w.place('chest', 8, 2));
-    run(w, 120);
-    expect(chest.items['iron-plate'] ?? 0).toBeGreaterThan(5);
-  });
-
-  it('assembles gears and exports them to the shop for credits', () => {
-    const w = flat();
+describe('production', () => {
+  it('assembles gears from a crate and ships them up the elevator', () => {
+    const w = new World(20, 10);
     const src = must<Chest>(w.place('chest', 0, 0));
-    src.items['iron-plate'] = 100;
+    src.items['ferrite-bar'] = 100;
     must(w.place('inserter', 1, 0, 1));
     must(w.place('assembler', 2, 0));
     expect(w.setRecipe(3, 1, 'gear')).toBe(true);
     must(w.place('inserter', 5, 0, 1));
-    must(w.place('terminal', 6, 0));
-    w.orders.push({ id: 'o1', item: 'gear', quantity: 3, delivered: 0, reward: 50 });
-    const before = w.credits;
+    must(w.place('elevator', 6, 0));
     run(w, 60);
-    const events = w.drainEvents();
-    const gears = events.filter((e) => e.type === 'exported').reduce((n, e) => n + (e.type === 'exported' ? e.count : 0), 0);
-    expect(gears).toBeGreaterThan(3);
-    expect(events.some((e) => e.type === 'order-complete' && e.orderId === 'o1')).toBe(true);
-    expect(w.credits).toBe(before + gears * w.prices.gear + 50);
+    expect(w.exportedTotal.gear ?? 0).toBeGreaterThan(3);
+  });
+});
+
+describe('levels', () => {
+  it('are well formed', () => {
+    for (const l of LEVELS) {
+      const widths = new Set(l.map.map((r) => r.length));
+      expect(widths.size, `${l.id} rows differ in width`).toBe(1);
+      const w = World.fromLevel(l);
+      const kinds = [...w.entities.values()].map((e) => e.kind);
+      expect(kinds.filter((k) => k === 'elevator')).toHaveLength(1);
+      expect(kinds.filter((k) => k === 'importer')).toHaveLength(l.imports?.length ?? 0);
+    }
+  });
+
+  it('the reference builds automate their sites in order', () => {
+    const c = new Campaign();
+    playDemos(c);
+    expect(c.automated.has('ferrite')).toBe(true);
+    expect(c.automated.has('gears')).toBe(true);
+    expect(c.isUnlocked('wire')).toBe(true);
+    const events = c.drainEvents();
+    expect(events.some((e) => e.type === 'automated' && e.next === 'gears')).toBe(true);
+    expect(c.credits).toBeGreaterThan(0);
+  });
+
+  it('every demo step lands on a free, valid tile', () => {
+    for (const id of ['ferrite', 'gears']) {
+      const w = World.fromLevel(LEVELS.find((l) => l.id === id)!);
+      const before = w.entities.size;
+      buildDemo(w, id);
+      expect(w.entities.size - before, id).toBeGreaterThan(8);
+    }
+  });
+
+  it('switches on cargo drops once the source site is automated', () => {
+    const c = new Campaign();
+    const circuits = c.site('circuits');
+    const drop = [...circuits.entities.values()].find((e) => e.kind === 'importer')!;
+    expect(drop.kind === 'importer' && drop.active).toBe(false);
+    (c as unknown as { markAutomated(id: string): void }).markAutomated('ferrite');
+    expect(drop.kind === 'importer' && drop.active).toBe(true);
   });
 });
 
 describe('persistence', () => {
-  it('round-trips through JSON', () => {
-    const w = flat();
-    ore(w, 0, 0, 'copper-ore');
-    must(w.place('miner', 0, 0, 1));
-    must(w.place('belt', 2, 0, 1));
-    run(w, 10);
-    const copy = World.load(JSON.parse(JSON.stringify(w.serialize())));
-    expect(copy.entities.size).toBe(2);
-    expect(copy.entityAt(2, 0)?.kind).toBe('belt');
+  it('round-trips a campaign through JSON', () => {
+    const c = new Campaign();
+    must(c.world.place('miner', 2, 3, 1));
+    line(c.world, 4, 3, 1, 3);
+    run(c, 10);
+    const copy = Campaign.load(JSON.parse(JSON.stringify(c.serialize())));
+    expect(copy.world.entities.size).toBe(c.world.entities.size);
+    expect(copy.world.entityAt(4, 3)?.kind).toBe('belt');
     run(copy, 5);
-    expect(copy.credits).toBe(w.credits);
   });
 });

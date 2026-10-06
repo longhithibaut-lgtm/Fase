@@ -1,6 +1,6 @@
 # Unity bridge
 
-The factory runs inside the Unity shop on an in-game computer screen through
+The planet factory runs inside the Unity orbital station shop on an in-game computer screen through
 [Vuplex 3D WebView](https://developer.vuplex.com/webview/overview). The two games
 exchange JSON messages; types live in `src/bridge/protocol.ts`.
 
@@ -9,9 +9,10 @@ exchange JSON messages; types live in `src/bridge/protocol.ts`.
 | type | payload | when |
 |---|---|---|
 | `factory.ready` | `version` | page loaded |
-| `factory.shipment` | `items: {itemId: count}`, `credits` | at most once per second while the export terminal receives goods |
-| `factory.orderComplete` | `orderId`, `reward` | a shop order was fully delivered |
-| `factory.state` | `credits`, `exportedTotal`, `orders` | reply to `shop.requestState` |
+| `factory.shipment` | `items: {itemId: count}`, `credits` | at most once per second while goods come up the orbital elevator, from every automated site |
+| `factory.automated` | `site`, `next` | a site reached its target rate; `next` is the site it unlocks |
+| `factory.orderComplete` | `orderId`, `reward` | a station order was fully delivered |
+| `factory.state` | `credits`, `automated`, `current`, `orders` | reply to `shop.requestState` |
 | `factory.save` | `save` | reply to `shop.requestSave` |
 
 ## Shop → factory
@@ -20,7 +21,6 @@ exchange JSON messages; types live in `src/bridge/protocol.ts`.
 |---|---|
 | `shop.setPrices` | `prices: {itemId: credits}` |
 | `shop.addOrder` | `order: {id, item, quantity, reward}` |
-| `shop.addCredits` | `amount` |
 | `shop.requestState` | — |
 | `shop.requestSave` | — |
 | `shop.loadSave` | `save` (from an earlier `factory.save`) |

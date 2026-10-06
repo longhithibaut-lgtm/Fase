@@ -1,12 +1,13 @@
 import Phaser from 'phaser';
-import { BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
-import { DX, DY, type Belt, type Dir, type Entity, World } from '../sim/world';
-import { BELT_FRAMES, TILE, makeAll } from './textures';
+import type { Campaign, CampaignEvent } from '../sim/campaign';
+import { BELT_SPEED, BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
+import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/world';
 import { Hud } from './hud';
-import { ORE_VARIANTS, ORE_TIERS, oreEdgeDistance, oreRichness } from './ground';
-import { hash2 } from '../sim/rng';
+import { BELT_FRAMES, CLIFF, TILE, makeShared, makeSite } from './textures';
 
 const STEP = 1 / 60;
+/** Room kept free around the plot for the HUD, in screen pixels. */
+const MARGIN = { top: 92, bottom: 96, side: 28 };
 
 interface View {
   parts: Phaser.GameObjects.GameObject[];
@@ -14,48 +15,52 @@ interface View {
 }
 
 export class FactoryScene extends Phaser.Scene {
-  world!: World;
+  campaign!: Campaign;
   hud!: Hud;
   tool: BuildingKind | null = null;
   toolDir: Dir = 1;
   selected: Entity | null = null;
-  /** Called once per frame after the simulation step (the shop bridge hooks in here). */
-  afterUpdate: () => void = () => {};
+  /** Called once per frame after the simulation step; returns campaign events (the shop bridge hooks in here). */
+  afterUpdate: () => CampaignEvent[] = () => this.campaign.drainEvents();
   private acc = 0;
   private lastNow = 0;
   private views = new Map<number, View>();
-  private oreImages = new Map<number, Phaser.GameObjects.Image>();
+  private siteLayer: Phaser.GameObjects.GameObject[] = [];
   private itemPool: Phaser.GameObjects.Image[] = [];
   private itemsUsed = 0;
+  private backdrop!: Phaser.GameObjects.Image;
   private ghost!: Phaser.GameObjects.Image;
   private ghostArrow!: Phaser.GameObjects.Image;
   private cursor!: Phaser.GameObjects.Rectangle;
   private selBox!: Phaser.GameObjects.Rectangle;
+  private cable!: Phaser.GameObjects.Graphics;
   private hover = { x: -1, y: -1 };
   private dragLast: { x: number; y: number } | null = null;
   private panning: { x: number; y: number; sx: number; sy: number } | null = null;
-  private keys!: Record<string, Phaser.Input.Keyboard.Key>;
-  private terrainImage?: Phaser.GameObjects.Image;
+  private fitZoom = 1;
+  private shownSite = '';
 
-  constructor(private initialWorld: () => World) {
+  constructor(private getCampaign: () => Campaign) {
     super('factory');
   }
 
+  get world(): World {
+    return this.campaign.world;
+  }
+
   create() {
-    this.world = this.initialWorld();
-    this.buildWorldView();
-    this.hud = new Hud(this);
-    this.ghost = this.add.image(0, 0, 'px').setDepth(50).setAlpha(0.55).setVisible(false);
+    this.campaign = this.getCampaign();
+    makeShared(this);
+    this.backdrop = this.add.image(0, 0, 'backdrop').setOrigin(0).setScrollFactor(0).setDepth(-10);
+    this.ghost = this.add.image(0, 0, 'px').setDepth(50).setAlpha(0.6).setVisible(false);
     this.ghostArrow = this.add.image(0, 0, 'arrow').setDepth(51).setVisible(false);
-    this.cursor = this.add.rectangle(0, 0, TILE, TILE).setStrokeStyle(2, 0xffd75a, 0.9).setDepth(49).setVisible(false);
-    this.selBox = this.add.rectangle(0, 0, TILE, TILE).setStrokeStyle(3, 0x5fd0ff, 1).setDepth(49).setVisible(false);
+    this.cursor = this.add.rectangle(0, 0, TILE, TILE).setStrokeStyle(3, 0xf2b632, 0.95).setDepth(49).setVisible(false);
+    this.selBox = this.add.rectangle(0, 0, TILE, TILE).setStrokeStyle(4, 0x4fd1bd, 1).setDepth(49).setVisible(false);
+    this.cable = this.add.graphics().setDepth(8);
+    this.hud = new Hud(this);
+    this.showSite(this.campaign.current);
 
-    const cam = this.cameras.main;
-    cam.setBackgroundColor('#101010');
-    cam.setBounds(-TILE * 4, -TILE * 4, (this.world.width + 8) * TILE, (this.world.height + 8) * TILE);
-    cam.setZoom(0.6);
-    cam.centerOn((this.world.width / 2) * TILE, (this.world.height / 2 - 4) * TILE);
-
+    this.scale.on('resize', () => this.fitCamera());
     this.input.mouse?.disableContextMenu();
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => this.onMove(p));
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.onDown(p));
@@ -64,55 +69,51 @@ export class FactoryScene extends Phaser.Scene {
       this.panning = null;
     });
     this.input.on('wheel', (p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
+      const cam = this.cameras.main;
       const before = cam.getWorldPoint(p.x, p.y);
-      cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), 0.25, 2));
+      cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), this.fitZoom * 0.8, this.fitZoom * 2.2));
       const after = cam.getWorldPoint(p.x, p.y);
       cam.scrollX += before.x - after.x;
       cam.scrollY += before.y - after.y;
     });
-    const kb = this.input.keyboard!;
-    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT') as Record<string, Phaser.Input.Keyboard.Key>;
-    kb.on('keydown', (ev: KeyboardEvent) => this.onKey(ev));
+    this.input.keyboard!.on('keydown', (ev: KeyboardEvent) => this.onKey(ev));
   }
 
-  /** Replace the whole world (save loaded from the shop). */
-  setWorld(w: World) {
-    this.world = w;
+  /** Switch to another site. */
+  showSite(id: string) {
+    if (!this.campaign.select(id)) return;
     for (const v of this.views.values()) v.parts.forEach((p) => p.destroy());
     this.views.clear();
-    for (const o of this.oreImages.values()) o.destroy();
-    this.oreImages.clear();
-    this.selected = null;
-    this.buildWorldView();
+    this.siteLayer.forEach((o) => o.destroy());
+    this.siteLayer = [];
+    this.select(null);
+    this.setTool(null);
+    const key = `site-${id}`;
+    if (!this.textures.exists(key)) makeSite(this, this.world, key);
+    this.siteLayer.push(this.add.image(0, 0, key).setOrigin(0).setDepth(0));
+    this.shownSite = id;
+    this.fitCamera();
+    this.hud.refreshSites();
   }
 
-  private buildWorldView() {
-    makeAll(this, this.world);
-    this.terrainImage?.destroy();
-    const img = this.add.image(0, 0, 'terrain').setOrigin(0).setDepth(0);
-    img.setScale((this.world.width * TILE) / img.width);
-    this.terrainImage = img;
-    const w = this.world;
-    const edge = oreEdgeDistance(w);
-    for (let y = 0; y < w.height; y++)
-      for (let x = 0; x < w.width; x++) {
-        const k = w.idx(x, y);
-        const o = w.ore[k];
-        if (!o) continue;
-        const v = Math.floor(hash2(x, y, w.seed + 5) * ORE_VARIANTS);
-        // Nugget count and size follow richness, capped by depth into the deposit so the
-        // outer rings fall off into a few small loose pebbles. Sprites are never rotated:
-        // every nugget is lit from the top-left.
-        const e = edge[k];
-        const jit = hash2(x, y, w.seed + 6);
-        const cap = e <= 1 ? (jit < 0.6 ? 0 : 1) : e <= 2 ? 2 + (jit > 0.5 ? 1 : 0) : ORE_TIERS - 1;
-        const rich = oreRichness(o.amount) * (ORE_TIERS - 1) + (jit - 0.5) * 0.8 + 0.3;
-        const t = Math.max(0, Math.min(cap, Math.round(rich)));
-        const jx = (hash2(x, y, w.seed + 9) - 0.5) * TILE * 0.1;
-        const jy = (hash2(x, y, w.seed + 10) - 0.5) * TILE * 0.1;
-        const img = this.add.image((x + 0.5) * TILE + jx, (y + 0.5) * TILE + jy, `ore-${o.type}-${t}-${v}`).setDepth(1);
-        this.oreImages.set(k, img);
-      }
+  /** Replace the campaign (save loaded from the shop). */
+  setCampaign(c: Campaign) {
+    this.campaign = c;
+    for (const k of this.textures.getTextureKeys()) if (k.startsWith('site-')) this.textures.remove(k);
+    this.shownSite = '';
+    this.showSite(c.current);
+  }
+
+  private fitCamera() {
+    const cam = this.cameras.main;
+    const vw = this.scale.width;
+    const vh = this.scale.height;
+    const w = this.world.width * TILE;
+    const h = this.world.height * TILE + CLIFF;
+    this.fitZoom = Math.min((vw - MARGIN.side * 2) / w, (vh - MARGIN.top - MARGIN.bottom) / h);
+    cam.setZoom(this.fitZoom);
+    cam.centerOn(w / 2, h / 2 - (MARGIN.top - MARGIN.bottom) / 2 / this.fitZoom);
+    this.backdrop.setScale(Math.max(vw / this.backdrop.width, vh / this.backdrop.height));
   }
 
   // ---------- input ----------
@@ -123,8 +124,7 @@ export class FactoryScene extends Phaser.Scene {
   }
 
   private placeOrigin(t: { x: number; y: number }, kind: BuildingKind) {
-    const s = BUILDINGS[kind].size;
-    const off = Math.floor((s - 1) / 2);
+    const off = Math.floor((BUILDINGS[kind].size - 1) / 2);
     return { x: t.x - off, y: t.y - off };
   }
 
@@ -183,7 +183,7 @@ export class FactoryScene extends Phaser.Scene {
       existing.dir = this.toolDir;
       return;
     }
-    if (this.world.place(this.tool, o.x, o.y, this.toolDir)) this.hud.flashCost(BUILDINGS[this.tool].cost);
+    this.world.place(this.tool, o.x, o.y, this.toolDir);
   }
 
   private onKey(ev: KeyboardEvent) {
@@ -194,7 +194,7 @@ export class FactoryScene extends Phaser.Scene {
     } else if (k === 'escape' || k === 'q') {
       if (k === 'q' && !this.tool) {
         const e = this.world.entityAt(this.hover.x, this.hover.y);
-        if (e) {
+        if (e && !BUILDINGS[e.kind].fixed) {
           this.setTool(e.kind);
           this.toolDir = e.dir;
           return;
@@ -208,38 +208,72 @@ export class FactoryScene extends Phaser.Scene {
   setTool(kind: BuildingKind | null) {
     this.tool = kind;
     if (kind) this.select(null);
-    this.hud.refreshToolbar();
+    this.hud?.refreshToolbar();
   }
 
   select(e: Entity | null) {
     this.selected = e;
-    this.hud.showEntity(e);
+    this.hud?.showEntity(e);
   }
 
   // ---------- frame ----------
 
-  update(time: number, deltaMs: number) {
-    const cam = this.cameras.main;
-    const pan = (700 * deltaMs) / 1000 / cam.zoom;
-    if (this.keys.A.isDown || this.keys.LEFT.isDown) cam.scrollX -= pan;
-    if (this.keys.D.isDown || this.keys.RIGHT.isDown) cam.scrollX += pan;
-    if (this.keys.W.isDown || this.keys.UP.isDown) cam.scrollY -= pan;
-    if (this.keys.S.isDown || this.keys.DOWN.isDown) cam.scrollY += pan;
-
+  update(time: number) {
     // Real elapsed time: Phaser smooths and clamps its delta, which slows the factory on slow frames.
     const now = performance.now();
     this.acc = Math.min(this.acc + (now - (this.lastNow || now)) / 1000, 0.5);
     this.lastNow = now;
     while (this.acc >= STEP) {
-      this.world.update(STEP);
+      this.campaign.update(STEP);
       this.acc -= STEP;
     }
-    this.afterUpdate();
+    if (this.campaign.current !== this.shownSite) this.showSite(this.campaign.current);
+    for (const ev of this.afterUpdate()) this.onCampaignEvent(ev);
     this.syncEntities(time);
-    this.syncOre();
     this.drawItems();
+    this.drawCable(time);
     this.drawCursor();
     this.hud.update(time);
+  }
+
+  private onCampaignEvent(ev: CampaignEvent) {
+    if (ev.type === 'shipped' && ev.site === this.shownSite) this.launchPod(ev.item);
+    else if (ev.type === 'automated') this.hud.onAutomated(ev.site, ev.next);
+  }
+
+  private elevatorCenter(): [number, number] | null {
+    for (const e of this.world.entities.values()) if (e.kind === 'elevator') return [(e.x + e.size / 2) * TILE, (e.y + e.size / 2) * TILE];
+    return null;
+  }
+
+  /** The orbital cable, rising from the elevator out of the top of the screen. */
+  private drawCable(time: number) {
+    const g = this.cable;
+    g.clear();
+    const c = this.elevatorCenter();
+    if (!c) return;
+    const top = this.cameras.main.worldView.y - 40;
+    g.lineStyle(14, 0x1c1411, 1);
+    g.lineBetween(c[0], c[1], c[0], top);
+    g.lineStyle(6, 0x9aa6b0, 1);
+    g.lineBetween(c[0], c[1], c[0], top);
+    g.lineStyle(2, 0x4fd1bd, 0.5 + Math.sin(time / 200) * 0.3);
+    g.lineBetween(c[0] + 2, c[1], c[0] + 2, top);
+  }
+
+  /** A cargo pod climbing the cable after each shipment. */
+  private launchPod(item: ItemId) {
+    const c = this.elevatorCenter();
+    if (!c) return;
+    const pod = this.add.container(c[0], c[1]).setDepth(9);
+    pod.add([this.add.rectangle(0, 0, 26, 30, 0xf2b632).setStrokeStyle(4, 0x1c1411), this.add.image(0, 0, `item-${item}`).setScale(0.75)]);
+    this.tweens.add({
+      targets: pod,
+      y: this.cameras.main.worldView.y - 80,
+      duration: 1600,
+      ease: 'Quad.easeIn',
+      onComplete: () => pod.destroy(),
+    });
   }
 
   private syncEntities(time: number) {
@@ -261,27 +295,16 @@ export class FactoryScene extends Phaser.Scene {
     }
   }
 
-  private syncOre() {
-    if (this.game.loop.frame % 30) return;
-    for (const [k, img] of this.oreImages) {
-      if (!this.world.ore[k]) {
-        img.destroy();
-        this.oreImages.delete(k);
-      }
-    }
-  }
-
   private makeView(e: Entity): View {
     const cx = (e.x + e.size / 2) * TILE;
     const cy = (e.y + e.size / 2) * TILE;
-    const angle = e.dir * 90;
     switch (e.kind) {
       case 'belt': {
         const img = this.add.image(cx, cy, 'belt-s-0').setDepth(2);
         return {
           parts: [img],
           update: (b, time) => {
-            const f = Math.floor((time / 1000) * BELT_FRAMES * (1.875 * TILE / 16)) % BELT_FRAMES;
+            const f = Math.floor((time / 1000) * BELT_FRAMES * ((BELT_SPEED * TILE) / 16)) % BELT_FRAMES;
             const c = this.world.isCurve(b as Belt);
             if (c.curve) {
               const fromLeft = c.from === (b.dir + 3) % 4;
@@ -301,7 +324,7 @@ export class FactoryScene extends Phaser.Scene {
             const drop = ins.dir * 90;
             const pick = drop + 180;
             const t = ins.t <= 0.5 ? ins.t * 2 : 2 - ins.t * 2;
-            const a = Phaser.Math.Linear(pick, drop + 360 * (pick > drop ? 1 : 0), t);
+            const a = Phaser.Math.Linear(pick, drop + 360, t);
             arm.setAngle(a);
             const rad = Phaser.Math.DegToRad(a - 90);
             held.setVisible(!!ins.held);
@@ -309,43 +332,46 @@ export class FactoryScene extends Phaser.Scene {
           },
         };
       }
-      case 'miner': {
-        const body = this.add.image(cx, cy, 'miner').setDepth(4);
-        const head = this.add.image(cx, cy - 6, 'miner-head').setDepth(4.1);
-        const [ox, oy] = this.world.minerOutputTile(e);
-        const arrow = this.add
-          .image((ox + 0.5) * TILE - DX[e.dir] * 20, (oy + 0.5) * TILE - DY[e.dir] * 20, 'arrow')
-          .setAngle(angle)
-          .setDepth(4.2)
-          .setScale(0.7);
+      case 'miner':
+      case 'importer': {
+        const body = this.add.image(cx, cy, e.kind).setDepth(4);
+        const head = e.kind === 'miner' ? this.add.image(cx - 2, cy, 'miner-head').setDepth(4.1) : null;
+        const arrow = this.add.image(0, 0, 'arrow').setDepth(4.2).setScale(0.7);
         return {
-          parts: [body, head, arrow],
+          parts: head ? [body, head, arrow] : [body, arrow],
           update: (m, time) => {
-            if (m.kind !== 'miner') return;
-            if (m.active) head.setAngle((time / 4) % 360);
+            if (m.kind !== 'miner' && m.kind !== 'importer') return;
+            if (head && m.active) head.setAngle((time / 4) % 360);
+            if (m.kind === 'importer') body.setAlpha(m.active ? 1 : 0.45);
             const [nx, ny] = this.world.minerOutputTile(m);
             arrow.setPosition((nx + 0.5) * TILE - DX[m.dir] * 20, (ny + 0.5) * TILE - DY[m.dir] * 20).setAngle(m.dir * 90);
           },
         };
       }
       case 'furnace': {
+        const glow = this.add.image(cx, cy + 10, 'fire').setDepth(3).setScale(3.2).setAlpha(0).setBlendMode(Phaser.BlendModes.ADD);
         const body = this.add.image(cx, cy, 'furnace').setDepth(4);
-        const fire = this.add.image(cx, cy + 4, 'fire').setDepth(4.1).setBlendMode(Phaser.BlendModes.ADD);
-        const glow = this.add.image(cx, cy + 10, 'fire').setDepth(3).setScale(3.5).setAlpha(0).setBlendMode(Phaser.BlendModes.ADD);
+        const fire = this.add.image(cx - 2, cy + 6, 'fire').setDepth(4.1).setScale(0.75, 0.6).setBlendMode(Phaser.BlendModes.ADD);
+        let nextPuff = 0;
         return {
           parts: [body, fire, glow],
           update: (f, time) => {
             if (f.kind !== 'furnace') return;
             const flick = 0.75 + Math.sin(time / 70 + f.id) * 0.15 + Math.sin(time / 31 + f.id * 3) * 0.1;
-            fire.setAlpha(f.active ? flick : 0.08);
-            glow.setAlpha(f.active ? flick * 0.35 : 0);
+            fire.setAlpha(f.active ? flick : 0.06);
+            glow.setAlpha(f.active ? flick * 0.3 : 0);
+            if (f.active && time > nextPuff) {
+              nextPuff = time + 700 + ((f.id * 137) % 400);
+              const puff = this.add.image(cx + 35, cy - 48, 'smoke').setDepth(10).setScale(0.4).setAlpha(0.9);
+              this.tweens.add({ targets: puff, y: puff.y - 70, x: puff.x + 18, scale: 1.1, alpha: 0, duration: 2200, onComplete: () => puff.destroy() });
+            }
           },
         };
       }
       case 'assembler': {
         const body = this.add.image(cx, cy, 'assembler').setDepth(4);
-        const arm = this.add.image(cx, cy, 'assembler-arm').setDepth(4.1);
-        const icon = this.add.image(cx + 52, cy + 52, 'px').setDepth(4.2).setScale(1.3);
+        const arm = this.add.image(cx - 3, cy + 4, 'assembler-arm').setDepth(4.1);
+        const icon = this.add.image(cx + 58, cy + 58, 'px').setDepth(4.2).setScale(1.3);
         return {
           parts: [body, arm, icon],
           update: (a, time) => {
@@ -358,10 +384,8 @@ export class FactoryScene extends Phaser.Scene {
       }
       case 'chest':
         return { parts: [this.add.image(cx, cy, 'chest').setDepth(4)], update: () => {} };
-      case 'terminal': {
-        const body = this.add.image(cx, cy, 'terminal').setDepth(4);
-        return { parts: [body], update: () => {} };
-      }
+      case 'elevator':
+        return { parts: [this.add.image(cx, cy, 'elevator').setDepth(4)], update: () => {} };
     }
   }
 
@@ -379,7 +403,6 @@ export class FactoryScene extends Phaser.Scene {
       u = 0;
       v = 0.5 - pos;
     }
-    // Rotate (u, v) from north-facing to b.dir.
     const r = [
       [u, v],
       [-v, u],
@@ -418,8 +441,7 @@ export class FactoryScene extends Phaser.Scene {
     const w = this.world;
     if (this.selected) {
       const s = this.selected;
-      this.selBox.setVisible(true).setPosition((s.x + s.size / 2) * TILE, (s.y + s.size / 2) * TILE).setSize(s.size * TILE, s.size * TILE);
-      this.selBox.setOrigin(0.5);
+      this.selBox.setVisible(true).setSize(s.size * TILE, s.size * TILE).setOrigin(0.5).setPosition((s.x + s.size / 2) * TILE, (s.y + s.size / 2) * TILE);
     } else this.selBox.setVisible(false);
     if (!w.inBounds(t.x, t.y)) {
       this.ghost.setVisible(false);
@@ -436,7 +458,7 @@ export class FactoryScene extends Phaser.Scene {
       const key = kind === 'belt' ? 'belt-s-0' : kind === 'inserter' ? 'inserter-base' : kind;
       const ok = w.canPlace(kind, o.x, o.y) || (kind === 'belt' && w.entityAt(t.x, t.y)?.kind === 'belt');
       this.ghost.setVisible(true).setTexture(key).setPosition(cx, cy).setAngle(kind === 'belt' ? this.toolDir * 90 : 0);
-      this.ghost.setTint(ok ? 0x88ff88 : 0xff6666);
+      this.ghost.setTint(ok ? 0x9cff9c : 0xff6a5a);
       this.cursor.setVisible(false);
       const rot = BUILDINGS[kind].rotatable;
       this.ghostArrow.setVisible(rot).setAngle(this.toolDir * 90);
@@ -450,9 +472,8 @@ export class FactoryScene extends Phaser.Scene {
       this.ghost.setVisible(false);
       this.ghostArrow.setVisible(false);
       const e = w.entityAt(t.x, t.y);
-      if (e) this.cursor.setVisible(true).setPosition((e.x + e.size / 2) * TILE, (e.y + e.size / 2) * TILE).setSize(e.size * TILE, e.size * TILE);
-      else this.cursor.setVisible(true).setPosition((t.x + 0.5) * TILE, (t.y + 0.5) * TILE).setSize(TILE, TILE);
-      this.cursor.setOrigin(0.5);
+      const [x, y, s] = e ? [e.x, e.y, e.size] : [t.x, t.y, 1];
+      this.cursor.setVisible(true).setSize(s * TILE, s * TILE).setOrigin(0.5).setPosition((x + s / 2) * TILE, (y + s / 2) * TILE);
     }
   }
 }

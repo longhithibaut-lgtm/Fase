@@ -1,4 +1,4 @@
-// The factory simulation. Pure TypeScript: no Phaser, no DOM.
+// The factory simulation for one site. Pure TypeScript: no Phaser, no DOM.
 // Rendering and the Unity bridge only read this state and call its public methods.
 
 import {
@@ -15,18 +15,18 @@ import {
   ItemId,
   MACHINE_BUFFER,
   MINER_PERIOD,
-  ORES,
   OreId,
+  RATE_WINDOW,
   Recipe,
   SMELTING,
 } from './defs';
-import { fbm, mulberry32 } from './rng';
+import { ORE_CHARS, type LevelDef, type LevelImport } from './levels';
 
 export type Dir = 0 | 1 | 2 | 3; // N E S W
 export const DX = [0, 1, 0, -1] as const;
 export const DY = [-1, 0, 1, 0] as const;
 
-export type Terrain = 'grass' | 'dirt' | 'sand' | 'water';
+export type Terrain = 'ground' | 'rock' | 'acid';
 
 export interface BeltItem {
   item: ItemId;
@@ -81,24 +81,23 @@ export interface Chest extends EntityBase {
   kind: 'chest';
   items: Partial<Record<ItemId, number>>;
 }
-export interface Terminal extends EntityBase {
-  kind: 'terminal';
+export interface Elevator extends EntityBase {
+  kind: 'elevator';
   received: number;
 }
-
-export type Entity = Belt | Inserter | Miner | Furnace | Assembler | Chest | Terminal;
-
-export interface ShopOrder {
-  id: string;
+export interface Importer extends EntityBase {
+  kind: 'importer';
   item: ItemId;
-  quantity: number;
-  delivered: number;
-  reward: number;
+  perMinute: number;
+  active: boolean;
+  progress: number;
+  out: ItemId | null;
 }
 
+export type Entity = Belt | Inserter | Miner | Furnace | Assembler | Chest | Elevator | Importer;
+
 export type WorldEvent =
-  | { type: 'exported'; item: ItemId; count: number; credits: number }
-  | { type: 'order-complete'; orderId: string; reward: number }
+  | { type: 'exported'; item: ItemId; count: number }
   | { type: 'built'; kind: BuildingKind; x: number; y: number }
   | { type: 'removed'; kind: BuildingKind; x: number; y: number };
 
@@ -107,32 +106,62 @@ export interface Ore {
   amount: number;
 }
 
+export const ORE_AMOUNT = 5000;
+
 export class World {
   readonly width: number;
   readonly height: number;
-  readonly seed: number;
+  readonly level: LevelDef | null;
   readonly terrain: Terrain[];
   readonly ore: (Ore | null)[];
   readonly occupancy: Int32Array;
   readonly entities = new Map<number, Entity>();
-  credits = 400;
-  prices: Record<ItemId, number>;
-  orders: ShopOrder[] = [];
+  /** Ticks at which the elevator received the level's product, oldest first. */
+  deliveries: number[] = [];
   exportedTotal: Partial<Record<ItemId, number>> = {};
   tick = 0;
   private nextId = 1;
   private events: WorldEvent[] = [];
   private pendingExports: Partial<Record<ItemId, number>> = {};
 
-  constructor(width = 96, height = 96, seed = 1337) {
+  constructor(width: number, height: number, level: LevelDef | null = null) {
     this.width = width;
     this.height = height;
-    this.seed = seed;
-    this.terrain = new Array(width * height);
+    this.level = level;
+    this.terrain = new Array(width * height).fill('ground');
     this.ore = new Array(width * height).fill(null);
     this.occupancy = new Int32Array(width * height);
-    this.prices = Object.fromEntries(Object.values(ITEMS).map((d) => [d.id, d.price])) as Record<ItemId, number>;
-    this.generate();
+  }
+
+  /** Builds a site from its level map. `activeImports` lists imports whose source is automated. */
+  static fromLevel(level: LevelDef, activeImports: LevelImport[] = []): World {
+    const h = level.map.length;
+    const w = Math.max(...level.map.map((r) => r.length));
+    const world = new World(w, h, level);
+    let elevator: [number, number] | null = null;
+    let importer: [number, number] | null = null;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const ch = level.map[y][x] ?? '.';
+        const k = world.idx(x, y);
+        if (ch === '#') world.terrain[k] = 'rock';
+        else if (ch === '~') world.terrain[k] = 'acid';
+        else if (ORE_CHARS[ch]) world.ore[k] = { type: ORE_CHARS[ch], amount: ORE_AMOUNT };
+        else if (ch === 'E' && !elevator) elevator = [x, y];
+        else if (ch === 'I' && !importer) importer = [x, y];
+      }
+    }
+    if (elevator) world.place('elevator', elevator[0], elevator[1]);
+    for (const imp of level.imports ?? []) {
+      if (!importer) break;
+      const e = world.place('importer', importer[0], importer[1], level.importDir ?? 2) as Importer | null;
+      if (e) {
+        e.item = imp.item;
+        e.perMinute = imp.perMinute;
+        e.active = activeImports.some((a) => a.from === imp.from && a.item === imp.item);
+      }
+    }
+    return world;
   }
 
   // ---------- map ----------
@@ -143,91 +172,6 @@ export class World {
 
   inBounds(x: number, y: number): boolean {
     return x >= 0 && y >= 0 && x < this.width && y < this.height;
-  }
-
-  private generate(): void {
-    const { width: w, height: h, seed } = this;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const n = fbm(x / 18, y / 18, seed);
-        const m = fbm(x / 9 + 40, y / 9 + 40, seed + 7);
-        let t: Terrain = 'grass';
-        if (n < 0.3) t = 'water';
-        else if (n < 0.34) t = 'sand';
-        else if (m > 0.58) t = 'dirt';
-        this.terrain[this.idx(x, y)] = t;
-      }
-    }
-    // Keep the starting area dry.
-    const cx = w >> 1;
-    const cy = h >> 1;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const d = Math.hypot(x - cx, y - cy);
-        if (d < 22 && this.terrain[this.idx(x, y)] === 'water') this.terrain[this.idx(x, y)] = d < 18 ? 'grass' : 'sand';
-      }
-    }
-    const rng = mulberry32(seed);
-    const starts: [OreId, number, number][] = [
-      ['iron-ore', -12, -9],
-      ['copper-ore', 11, -10],
-      ['coal', -11, 10],
-      ['stone', 12, 9],
-    ];
-    // Starter patches are mid-sized; outer patches range ~3x in radius, from small
-    // pockets to large sprawling fields.
-    for (const [type, ox, oy] of starts) this.orePatch(type, cx + ox, cy + oy, 5.6 + rng() * 1.8, rng);
-    for (let i = 0; i < 10; i++) {
-      const type = ORES[Math.floor(rng() * ORES.length)];
-      const a = rng() * Math.PI * 2;
-      const r = 26 + rng() * 18;
-      const size = rng();
-      this.orePatch(type, Math.round(cx + Math.cos(a) * r), Math.round(cy + Math.sin(a) * r), 2.8 + size * size * 5.8, rng);
-    }
-  }
-
-  /**
-   * One ore deposit. The mask is a domain-warped, low-frequency noise threshold over a
-   * stretched, randomly rotated ellipse, so deposits come out elongated, lobed or kidney
-   * shaped with bays and peninsulas. The centre always holds ore; amount grows inwards.
-   */
-  private orePatch(type: OreId, px: number, py: number, radius: number, rng: () => number): void {
-    const s = Math.floor(rng() * 1e6);
-    const ang = rng() * Math.PI;
-    const stretch = 1.2 + rng() * 0.8;
-    const ra = radius * Math.sqrt(stretch);
-    const rb = radius / Math.sqrt(stretch);
-    const ca = Math.cos(ang);
-    const sa = Math.sin(ang);
-    const f = 1 / (radius * 0.85);
-    const warpAmt = radius * 1.5;
-    const warp = (x: number, y: number): [number, number] => [
-      (fbm(x * f * 0.7, y * f * 0.7, s + 1, 2) - 0.5) * warpAmt,
-      (fbm(x * f * 0.7 + 31.7, y * f * 0.7 + 17.3, s + 2, 2) - 0.5) * warpAmt,
-    ];
-    // Zero the warp at the centre so the deposit stays anchored on (px, py).
-    const [w0x, w0y] = warp(px, py);
-    const R = Math.ceil(ra * 1.8 + 3);
-    for (let y = py - R; y <= py + R; y++) {
-      for (let x = px - R; x <= px + R; x++) {
-        if (!this.inBounds(x, y)) continue;
-        const i = this.idx(x, y);
-        if (this.terrain[i] === 'water') continue;
-        const prev = this.ore[i];
-        if (prev && prev.type !== type) continue;
-        const [wx, wy] = warp(x, y);
-        const qx = x - px + wx - w0x;
-        const qy = y - py + wy - w0y;
-        const u = (qx * ca + qy * sa) / ra;
-        const v = (-qx * sa + qy * ca) / rb;
-        const d = Math.hypot(u, v);
-        const n = fbm((x + wx) * f, (y + wy) * f, s + 3, 3);
-        const m = 1 - d + (n - 0.5) * 1.7 * Math.min(1, d + 0.3);
-        if (m <= 0) continue;
-        const amount = Math.round(300 + Math.min(1, m * 2.4) * 1500);
-        if (!prev || prev.amount < amount) this.ore[i] = { type, amount };
-      }
-    }
   }
 
   // ---------- entities ----------
@@ -247,12 +191,11 @@ export class World {
         const ty = y + j;
         if (!this.inBounds(tx, ty)) return false;
         const k = this.idx(tx, ty);
-        if (this.occupancy[k] || this.terrain[k] === 'water') return false;
+        if (this.occupancy[k] || this.terrain[k] !== 'ground') return false;
         if (this.ore[k]) hasOre = true;
       }
     }
-    if (kind === 'miner' && !hasOre) return false;
-    return this.credits >= BUILDINGS[kind].cost;
+    return kind !== 'miner' || hasOre;
   }
 
   place(kind: BuildingKind, x: number, y: number, dir: Dir = 0): Entity | null {
@@ -279,11 +222,13 @@ export class World {
       case 'chest':
         e = { ...base, kind, items: {} };
         break;
-      case 'terminal':
+      case 'elevator':
         e = { ...base, kind, received: 0 };
         break;
+      case 'importer':
+        e = { ...base, kind, item: 'ferrite-bar', perMinute: 0, active: false, progress: 0, out: null };
+        break;
     }
-    this.credits -= def.cost;
     this.entities.set(e.id, e);
     this.forTiles(e, (k) => (this.occupancy[k] = e.id));
     this.events.push({ type: 'built', kind, x, y });
@@ -292,17 +237,16 @@ export class World {
 
   remove(x: number, y: number): Entity | null {
     const e = this.entityAt(x, y);
-    if (!e) return null;
+    if (!e || BUILDINGS[e.kind].fixed) return null;
     this.entities.delete(e.id);
     this.forTiles(e, (k) => (this.occupancy[k] = 0));
-    this.credits += BUILDINGS[e.kind].cost;
     this.events.push({ type: 'removed', kind: e.kind, x: e.x, y: e.y });
     return e;
   }
 
   rotate(x: number, y: number): void {
     const e = this.entityAt(x, y);
-    if (e && BUILDINGS[e.kind].rotatable) e.dir = ((e.dir + 1) % 4) as Dir;
+    if (e && BUILDINGS[e.kind].rotatable && !BUILDINGS[e.kind].fixed) e.dir = ((e.dir + 1) % 4) as Dir;
   }
 
   setRecipe(x: number, y: number, recipeId: string): boolean {
@@ -319,11 +263,31 @@ export class World {
     return true;
   }
 
+  /** Parts cost of everything the player built: the solution's cost score. */
+  cost(): number {
+    let n = 0;
+    for (const e of this.entities.values()) n += BUILDINGS[e.kind].cost;
+    return n;
+  }
+
+  /** Product items received by the elevator over the last RATE_WINDOW seconds, scaled to per minute. */
+  rate(): number {
+    const from = this.tick - RATE_WINDOW * 60;
+    let i = 0;
+    while (i < this.deliveries.length && this.deliveries[i] <= from) i++;
+    if (i) this.deliveries.splice(0, i);
+    return (this.deliveries.length * 60) / RATE_WINDOW;
+  }
+
+  isAutomated(): boolean {
+    return !!this.level && this.rate() >= this.level.target;
+  }
+
   private forTiles(e: EntityBase, fn: (k: number) => void): void {
     for (let j = 0; j < e.size; j++) for (let i = 0; i < e.size; i++) fn(this.idx(e.x + i, e.y + j));
   }
 
-  /** Tile a miner drops its output onto. */
+  /** Tile a drill or cargo drop outputs onto. */
   minerOutputTile(m: EntityBase): [number, number] {
     const s = m.size;
     switch (m.dir) {
@@ -381,7 +345,7 @@ export class World {
         for (const v of Object.values(e.items)) n += v ?? 0;
         return n < CHEST_CAPACITY;
       }
-      case 'terminal':
+      case 'elevator':
         return true;
       case 'furnace': {
         if (ITEMS[item].fuel) return e.fuel < MACHINE_BUFFER;
@@ -407,9 +371,10 @@ export class World {
       case 'chest':
         e.items[item] = (e.items[item] ?? 0) + 1;
         return true;
-      case 'terminal':
+      case 'elevator':
         e.received++;
         this.pendingExports[item] = (this.pendingExports[item] ?? 0) + 1;
+        if (item === this.level?.product) this.deliveries.push(this.tick);
         return true;
       case 'furnace':
         if (ITEMS[item].fuel) e.fuel++;
@@ -457,6 +422,7 @@ export class World {
         }
         return null;
       case 'miner':
+      case 'importer':
         if (e.out && want(e.out)) {
           const out = e.out;
           e.out = null;
@@ -482,6 +448,9 @@ export class World {
           break;
         case 'miner':
           this.updateMiner(e, dt);
+          break;
+        case 'importer':
+          this.updateImporter(e, dt);
           break;
         case 'furnace':
           this.updateFurnace(e, dt);
@@ -522,7 +491,7 @@ export class World {
               }
             } else moved = this.beltInsert(next, it.item, p);
           }
-        } else if (next.kind === 'terminal' || next.kind === 'chest') {
+        } else if (next.kind === 'elevator' || next.kind === 'chest') {
           moved = this.insert(next, it.item);
         }
         if (moved) b.items.pop();
@@ -549,15 +518,20 @@ export class World {
     if (ins.t >= 1 && ins.held === null) ins.t = 0;
   }
 
-  private updateMiner(m: Miner, dt: number): void {
+  /** Pushes a drill's or cargo drop's buffered item onto whatever it faces. */
+  private pushOut(m: Miner | Importer): void {
+    if (!m.out) return;
     const [ox, oy] = this.minerOutputTile(m);
     const target = this.entityAt(ox, oy);
-    if (m.out && target) {
-      if (target.kind === 'belt') {
-        const p = target.dir === m.dir ? 0 : 0.5;
-        if (this.beltInsert(target, m.out, p)) m.out = null;
-      } else if (this.insert(target, m.out)) m.out = null;
-    }
+    if (!target) return;
+    if (target.kind === 'belt') {
+      const p = target.dir === m.dir ? 0 : 0.5;
+      if (this.beltInsert(target, m.out, p)) m.out = null;
+    } else if (this.insert(target, m.out)) m.out = null;
+  }
+
+  private updateMiner(m: Miner, dt: number): void {
+    this.pushOut(m);
     m.active = false;
     if (m.out) return;
     let tile = -1;
@@ -581,6 +555,16 @@ export class World {
     }
   }
 
+  private updateImporter(m: Importer, dt: number): void {
+    this.pushOut(m);
+    if (!m.active || m.out || m.perMinute <= 0) return;
+    m.progress += (dt * m.perMinute) / 60;
+    if (m.progress >= 1) {
+      m.progress -= 1;
+      m.out = m.item;
+    }
+  }
+
   private updateFurnace(f: Furnace, dt: number): void {
     if (!f.recipe) {
       const r = f.input ? SMELTING.find((s) => s.inputs[f.input!]) : undefined;
@@ -589,7 +573,7 @@ export class World {
       if (r && f.inputCount >= need && outOk && (f.fuelOps > 0 || f.fuel > 0)) {
         if (f.fuelOps === 0) {
           f.fuel--;
-          f.fuelOps = ITEMS.coal.fuel!;
+          f.fuelOps = ITEMS.carbon.fuel!;
         }
         f.fuelOps--;
         f.inputCount -= need;
@@ -629,23 +613,9 @@ export class World {
 
   private flushExports(): void {
     for (const [item, count] of Object.entries(this.pendingExports) as [ItemId, number][]) {
-      let remaining = count;
-      for (const o of this.orders) {
-        if (o.item !== item || o.delivered >= o.quantity || remaining === 0) continue;
-        const n = Math.min(remaining, o.quantity - o.delivered);
-        o.delivered += n;
-        if (o.delivered >= o.quantity) {
-          this.credits += o.reward;
-          this.events.push({ type: 'order-complete', orderId: o.id, reward: o.reward });
-        }
-      }
-      const credits = this.prices[item] * count;
-      this.credits += credits;
       this.exportedTotal[item] = (this.exportedTotal[item] ?? 0) + count;
-      this.events.push({ type: 'exported', item, count, credits });
-      remaining = 0;
+      this.events.push({ type: 'exported', item, count });
     }
-    this.orders = this.orders.filter((o) => o.delivered < o.quantity);
     this.pendingExports = {};
   }
 
@@ -657,53 +627,40 @@ export class World {
 
   // ---------- persistence ----------
 
-  serialize(): SaveData {
+  serialize(): SiteSave {
     return {
-      version: 1,
-      seed: this.seed,
-      width: this.width,
-      height: this.height,
-      credits: this.credits,
       tick: this.tick,
-      prices: this.prices,
-      orders: this.orders,
+      deliveries: this.deliveries,
       exportedTotal: this.exportedTotal,
       ore: this.ore.map((o) => (o ? o.amount : 0)),
       entities: [...this.entities.values()].map((e) => structuredClone(e)),
     };
   }
 
-  static load(data: SaveData): World {
-    const w = new World(data.width, data.height, data.seed);
-    w.credits = data.credits;
-    w.tick = data.tick;
-    w.prices = { ...w.prices, ...data.prices };
-    w.orders = data.orders;
-    w.exportedTotal = data.exportedTotal;
+  /** Restores a site saved with serialize() onto a freshly built level world. */
+  restore(data: SiteSave): void {
+    this.entities.clear();
+    this.occupancy.fill(0);
+    this.tick = data.tick;
+    this.deliveries = [...data.deliveries];
+    this.exportedTotal = { ...data.exportedTotal };
     data.ore.forEach((amount, i) => {
-      const o = w.ore[i];
+      const o = this.ore[i];
       if (o && amount > 0) o.amount = amount;
-      else w.ore[i] = null;
+      else this.ore[i] = null;
     });
     for (const e of data.entities) {
       const copy = structuredClone(e) as Entity;
-      w.entities.set(copy.id, copy);
-      w.forTiles(copy, (k) => (w.occupancy[k] = copy.id));
-      w.nextId = Math.max(w.nextId, copy.id + 1);
+      this.entities.set(copy.id, copy);
+      this.forTiles(copy, (k) => (this.occupancy[k] = copy.id));
+      this.nextId = Math.max(this.nextId, copy.id + 1);
     }
-    return w;
   }
 }
 
-export interface SaveData {
-  version: 1;
-  seed: number;
-  width: number;
-  height: number;
-  credits: number;
+export interface SiteSave {
   tick: number;
-  prices: Record<ItemId, number>;
-  orders: ShopOrder[];
+  deliveries: number[];
   exportedTotal: Partial<Record<ItemId, number>>;
   ore: number[];
   entities: Entity[];

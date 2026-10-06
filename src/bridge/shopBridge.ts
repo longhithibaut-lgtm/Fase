@@ -1,8 +1,8 @@
-// Connects the simulation to the Unity shop. Transport: Vuplex 3D WebView when
-// embedded in Unity, window.parent.postMessage when embedded in an iframe (dev harness).
+// Connects the campaign to the Unity shop. Transport: Vuplex 3D WebView when embedded in
+// Unity, window.parent.postMessage when embedded in an iframe (dev harness).
 
+import type { Campaign } from '../sim/campaign';
 import { ITEMS, type ItemId } from '../sim/defs';
-import type { World } from '../sim/world';
 import type { FactoryMessage, ShopMessage } from './protocol';
 
 interface VuplexApi {
@@ -25,27 +25,30 @@ export class ShopBridge {
   readonly sent: FactoryMessage[] = [];
 
   constructor(
-    private getWorld: () => World,
-    private replaceWorld: (save: ShopMessage & { type: 'shop.loadSave' }) => void,
+    private getCampaign: () => Campaign,
+    private loadSave: (msg: ShopMessage & { type: 'shop.loadSave' }) => void,
   ) {
     const onVuplex = () => {
       window.vuplex!.addEventListener('message', (e) => this.receiveRaw(e.data));
-      this.send({ type: 'factory.ready', version: 1 });
+      this.send({ type: 'factory.ready', version: 2 });
     };
     if (window.vuplex) onVuplex();
     else window.addEventListener('vuplexready', onVuplex);
     window.addEventListener('message', (e) => {
       if (e.source !== window) this.receiveRaw(e.data);
     });
-    if (window.parent !== window) this.send({ type: 'factory.ready', version: 1 });
+    if (window.parent !== window) this.send({ type: 'factory.ready', version: 2 });
   }
 
-  /** Call once per frame after the simulation update. */
-  update(now: number): void {
-    for (const ev of this.getWorld().drainEvents()) {
-      if (ev.type === 'exported') {
+  /** Call once per frame after the simulation update. Returns the campaign events it consumed. */
+  update(now: number) {
+    const events = this.getCampaign().drainEvents();
+    for (const ev of events) {
+      if (ev.type === 'shipped') {
         this.shipment[ev.item] = (this.shipment[ev.item] ?? 0) + ev.count;
         this.shipmentCredits += ev.credits;
+      } else if (ev.type === 'automated') {
+        this.send({ type: 'factory.automated', site: ev.site, next: ev.next });
       } else if (ev.type === 'order-complete') {
         this.send({ type: 'factory.orderComplete', orderId: ev.orderId, reward: ev.reward });
       }
@@ -56,6 +59,7 @@ export class ShopBridge {
       this.shipmentCredits = 0;
       this.lastFlush = now;
     }
+    return events;
   }
 
   receiveRaw(raw: unknown): void {
@@ -70,25 +74,22 @@ export class ShopBridge {
   }
 
   receive(msg: ShopMessage): void {
-    const w = this.getWorld();
+    const c = this.getCampaign();
     switch (msg.type) {
       case 'shop.setPrices':
-        for (const [k, v] of Object.entries(msg.prices)) if (k in ITEMS && typeof v === 'number') w.prices[k as ItemId] = v;
+        for (const [k, v] of Object.entries(msg.prices)) if (k in ITEMS && typeof v === 'number') c.prices[k as ItemId] = v;
         break;
       case 'shop.addOrder':
-        if (msg.order.item in ITEMS) w.orders.push({ ...msg.order, delivered: 0 });
-        break;
-      case 'shop.addCredits':
-        w.credits += msg.amount;
+        c.addOrder(msg.order);
         break;
       case 'shop.requestState':
-        this.send({ type: 'factory.state', credits: w.credits, exportedTotal: w.exportedTotal, orders: w.orders });
+        this.send({ type: 'factory.state', credits: c.credits, automated: [...c.automated], current: c.current, orders: c.orders });
         break;
       case 'shop.requestSave':
-        this.send({ type: 'factory.save', save: w.serialize() });
+        this.send({ type: 'factory.save', save: c.serialize() });
         break;
       case 'shop.loadSave':
-        this.replaceWorld(msg);
+        this.loadSave(msg);
         break;
     }
   }
