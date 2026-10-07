@@ -161,13 +161,9 @@ function box(ctx: Ctx, x: number, y: number, w: number, h: number, d: number, r:
   const lw = o.lw ?? 4;
   const seed = o.seed ?? 1;
   const whole = rrect(x, y, w, h + d, r);
+  // Whole machine bodies pass shadow: 0 and get a separate soft contact-shadow sprite instead.
   const sh = o.shadow ?? 7;
-  if (sh) {
-    ctx.fillStyle = 'rgba(28,12,6,0.4)';
-    ctx.beginPath();
-    ctx.roundRect(x + sh * 0.8, y + sh, w, h + d, r);
-    ctx.fill();
-  }
+  if (sh) softDrop(ctx, whole, sh * 0.6, sh * 0.8, sh * 1.3, 0.5);
   const wall = o.wall ?? shade(base, -0.5);
   clipTo(ctx, whole, () => {
     ctx.fillStyle = css(wall);
@@ -179,7 +175,80 @@ function box(ctx: Ctx, x: number, y: number, w: number, h: number, d: number, r:
     drips(ctx, x, y + h, w, d, seed, Math.max(3, (w / 14) | 0));
   });
   cel(ctx, rrect(x, y, w, h, r), base, { k: o.k ?? 6, lw: lw * 0.7, drop: 0 });
+  gloss(ctx, rrect(x, y, w, h, r), x, y, w, h);
   inkStroke(ctx, whole, lw);
+}
+
+/**
+ * The shared key light, applied to every finished body: a cream catch-light band a few pixels in
+ * from the silhouette's top and left edges (just inside the ink line), and a faint sheen falling
+ * off from the top-left corner. Made from the texture's own alpha so every machine is lit alike.
+ */
+function litRim(ctx: Ctx, band = 3, inset = 4) {
+  const src = ctx.canvas;
+  const w = src.width;
+  const h = src.height;
+  const t = document.createElement('canvas');
+  t.width = w;
+  t.height = h;
+  const c = t.getContext('2d')!;
+  c.drawImage(src, inset, inset);
+  c.globalCompositeOperation = 'destination-out';
+  c.drawImage(src, inset + band, inset + band);
+  c.globalCompositeOperation = 'destination-in';
+  c.drawImage(src, 0, 0);
+  c.globalCompositeOperation = 'source-in';
+  c.fillStyle = 'rgba(255,248,226,0.5)';
+  c.fillRect(0, 0, w, h);
+  ctx.save();
+  ctx.drawImage(t, 0, 0);
+  ctx.globalCompositeOperation = 'source-atop';
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(w, h) * 0.8);
+  g.addColorStop(0, 'rgba(255,248,226,0.16)');
+  g.addColorStop(1, 'rgba(255,248,226,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
+/** A soft blurred drop shadow of `path`, offset to the lower right (light from the top-left). */
+function softDrop(ctx: Ctx, path: PathFn, dx: number, dy: number, blur: number, alpha: number) {
+  ctx.save();
+  ctx.shadowColor = `rgba(24,10,4,${alpha})`;
+  ctx.shadowBlur = blur;
+  ctx.shadowOffsetX = 2000 + dx;
+  ctx.shadowOffsetY = dy;
+  ctx.beginPath();
+  path(ctx, -2000, 0);
+  ctx.fillStyle = '#000';
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * The one shared key light: a sheen falling off from the top-left corner of a lit face, and a
+ * crisp catch-light just inside its top and left edges (the same offset stroke falls outside the
+ * clip on the bottom and right edges, so only the lit rim shows).
+ */
+function gloss(ctx: Ctx, path: PathFn, x: number, y: number, w: number, h: number, strength = 1) {
+  clipTo(ctx, path, () => {
+    const g = ctx.createLinearGradient(x, y, x + w * 0.6, y + h * 0.6);
+    g.addColorStop(0, `rgba(255,250,232,${0.3 * strength})`);
+    g.addColorStop(0.4, `rgba(255,250,232,${0.07 * strength})`);
+    g.addColorStop(1, 'rgba(255,250,232,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x, y, w, h);
+    const rim = ctx.createLinearGradient(x, y, x + w * 0.75, y + h * 0.75);
+    rim.addColorStop(0, `rgba(255,253,240,${0.9 * strength})`);
+    rim.addColorStop(0.55, `rgba(255,253,240,${0.3 * strength})`);
+    rim.addColorStop(1, 'rgba(255,253,240,0)');
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = 2.6;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    path(ctx, 2.6, 2.6);
+    ctx.stroke();
+  });
 }
 
 /** A circle standing on a short cylinder wall (top face lit, wall hatched). */
@@ -193,12 +262,7 @@ function drum(ctx: Ctx, x: number, y: number, r: number, d: number, base: number
     c.arc(x + ox, y + oy + d, r, 0, Math.PI);
     c.closePath();
   };
-  if (sh) {
-    ctx.beginPath();
-    hull(ctx, sh * 0.8, sh);
-    ctx.fillStyle = 'rgba(28,12,6,0.4)';
-    ctx.fill();
-  }
+  if (sh) softDrop(ctx, hull, sh * 0.6, sh * 0.8, sh * 1.3, 0.5);
   clipTo(ctx, hull, () => {
     ctx.fillStyle = css(base, -0.5);
     ctx.fillRect(x - r, y - r, r * 2, r * 2 + d);
@@ -207,6 +271,7 @@ function drum(ctx: Ctx, x: number, y: number, r: number, d: number, base: number
     hatch(ctx, x, y, r, d + r, 4, 0.45);
   });
   cel(ctx, circle(x, y, r), base, { k: o.k ?? Math.max(2, r * 0.18), lw: lw * 0.75, drop: 0 });
+  gloss(ctx, circle(x, y, r), x - r, y - r, r * 2, r * 2);
   inkStroke(ctx, hull, lw);
 }
 
@@ -434,7 +499,7 @@ function makeDrill(scene: Phaser.Scene) {
   const [ctx, tex] = canvas(scene, 'miner-body', S, S);
   // Crawler tracks.
   for (const tx of [5, 99]) {
-    box(ctx, tx, 16, 24, 88, 10, 7, 0x3b3439, { k: 3, lw: 3.5, seed: tx });
+    box(ctx, tx, 16, 24, 88, 10, 7, 0x3b3439, { k: 3, lw: 3.5, seed: tx, shadow: 0 });
     clipTo(ctx, rrect(tx, 16, 24, 88, 7), () => {
       for (let y = 20; y < 104; y += 8) {
         ctx.fillStyle = 'rgba(255,235,200,0.18)';
@@ -446,7 +511,7 @@ function makeDrill(scene: Phaser.Scene) {
     inkStroke(ctx, rrect(tx, 16, 24, 88, 7), 3);
   }
   const body = rrect(20, 10, 88, 86, 13);
-  box(ctx, 20, 10, 88, 86, 18, 13, PALETTE.hazard, { k: 8, seed: 3 });
+  box(ctx, 20, 10, 88, 86, 18, 13, PALETTE.hazard, { k: 8, seed: 3, shadow: 0 });
   // Hazard stripes on the front wall.
   clipTo(ctx, rrect(20, 10, 88, 104, 13), () => {
     ctx.save();
@@ -496,6 +561,7 @@ function makeDrill(scene: Phaser.Scene) {
   ctx.lineWidth = 3;
   ctx.stroke();
   stencil(ctx, 'DR-2', 92, 89, 8, 'rgba(28,20,17,0.6)');
+  litRim(ctx);
   tex.refresh();
   // Icon / placement ghost: the body with its bit in place.
   const [ci, ti] = canvas(scene, 'miner', S, S);
@@ -559,7 +625,7 @@ function makeSmelter(scene: Phaser.Scene) {
   const S = TILE * 2;
   const [ctx, tex] = canvas(scene, 'furnace', S, S);
   const top = rrect(8, 12, 112, 82, 12);
-  box(ctx, 8, 12, 112, 82, 22, 12, PALETTE.rust, { k: 8, seed: 23, wall: 0x5a2618 });
+  box(ctx, 8, 12, 112, 82, 22, 12, PALETTE.rust, { k: 8, seed: 23, wall: 0x5a2618, shadow: 0 });
   // Brick courses on the top face and the wall.
   clipTo(ctx, top, () => {
     ctx.strokeStyle = 'rgba(28,20,17,0.4)';
@@ -694,6 +760,7 @@ function makeSmelter(scene: Phaser.Scene) {
     ctx.stroke();
   }
   stencil(ctx, 'HOT', 100, 108, 9, 'rgba(242,182,50,0.85)');
+  litRim(ctx);
   tex.refresh();
 
   // Molten pool: swirling bright metal with drifting dark crust.
@@ -754,143 +821,267 @@ function makeSmelter(scene: Phaser.Scene) {
   }
 }
 
-// Fabricator 3x3: a heavy stamping press. Four guide columns around a die bed, a press head that
-// rises and slams, a flywheel, a recipe screen and a steam vent.
-const FAB = { bx: 96, by: 84, bed: 92 };
+// Fabricator 3x3: a two-cylinder hydraulic stamping press, drawn standing up off its footprint.
+// A hazard-yellow crown beam on two chrome guide posts; two hydraulic cylinders hang from the
+// crown and drive a heavy ram head down onto a die block, where a half-formed part waits in the
+// die. The rods, ram, blank and finished part are separate sprites so the ram can plunge with a
+// squash-and-stretch and spit the part out toward the output grabber.
+const FAB = {
+  rodX: [68, 124] as const, // cylinder axes
+  rodTop: 64, // where the chrome rods leave the glands
+  up: 110, // punch-face height with the ram wound up
+  rest: 118, // ... idling
+  down: 140, // ... at full stroke, on the blank
+  dieY: 137, // blank centre in the die
+  postX: [28, 164] as const,
+};
+const RAM = { w: 168, h: 46, oy: 44, cx: 84 }; // texture size, punch-face row, centre column
+
+/** A vertical cylinder (post, barrel, rod): lit left, specular streak, hatched right, inked. */
+function column(c: Ctx, x: number, y0: number, y1: number, w: number, base: number, o: { lw?: number; r?: number; chrome?: boolean } = {}) {
+  const p = rrect(x - w / 2, y0, w, y1 - y0, o.r ?? Math.min(3, w / 4));
+  clipTo(c, p, () => {
+    c.fillStyle = css(base, -0.45);
+    c.fillRect(x - w / 2, y0, w, y1 - y0);
+    c.fillStyle = css(base);
+    c.fillRect(x - w / 2, y0, w * 0.64, y1 - y0);
+    if (o.chrome) {
+      // Chrome: a dark reflected band through the lit side and a bright core streak.
+      c.fillStyle = css(base, -0.3);
+      c.fillRect(x - w / 2 + w * 0.38, y0, w * 0.12, y1 - y0);
+    }
+    c.fillStyle = css(base, 0.6);
+    c.fillRect(x - w / 2 + w * 0.16, y0, Math.max(1.5, w * 0.13), y1 - y0);
+    c.save();
+    c.beginPath();
+    c.rect(x + w * 0.14, y0, w * 0.36, y1 - y0);
+    c.clip();
+    hatch(c, x + w * 0.14, y0, w * 0.36, y1 - y0, 3.5, 0.42, 1.1);
+    c.restore();
+  });
+  inkStroke(c, p, o.lw ?? 3);
+}
+
+/** Points of a gear lying flat on a die, seen from above at the board's tilt (y squashed). Teeth
+ *  are only cut between angles a0..a1 (radians); elsewhere the rim is still a raw blank. */
+function flatGear(cx: number, cy: number, r0: number, r1: number, teeth: number, sq: number, a0 = -Math.PI, a1 = Math.PI): [number, number][] {
+  const pts: [number, number][] = [];
+  const n = teeth * 4;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 - Math.PI;
+    const cut = a >= a0 && a <= a1;
+    const r = cut ? (i % 4 < 2 ? r1 : r0) : r0 + (r1 - r0) * 0.45;
+    pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r * sq]);
+  }
+  return pts;
+}
+
 function makeFabricator(scene: Phaser.Scene) {
   const S = TILE * 3;
   const [ctx, tex] = canvas(scene, 'assembler-body', S, S);
-  const top = rrect(8, 10, 176, 150, 16);
-  box(ctx, 8, 10, 176, 150, 24, 16, PALETTE.steel, { k: 10, seed: 37 });
-  // Hazard band and vents on the front wall.
-  clipTo(ctx, rrect(8, 10, 176, 174, 16), () => {
+  // Bed: a low steel bolster plate the whole press stands on, hazard band on its front wall.
+  box(ctx, 8, 116, 176, 46, 20, 12, 0x4d525c, { k: 6, seed: 37, shadow: 0 });
+  clipTo(ctx, rrect(8, 116, 176, 66, 12), () => {
     ctx.save();
     ctx.beginPath();
-    ctx.rect(30, 164, 132, 12);
+    ctx.rect(26, 166, 140, 11);
     ctx.clip();
-    stripes(ctx, 30, 164, 132, 12, 14);
-    hatch(ctx, 100, 164, 62, 12, 4, 0.4);
+    stripes(ctx, 26, 166, 140, 11, 14);
+    hatch(ctx, 100, 166, 66, 11, 4, 0.4);
     ctx.restore();
     ctx.strokeStyle = INK;
     ctx.lineWidth = 2.5;
-    ctx.strokeRect(30, 164, 132, 12);
+    ctx.strokeRect(26, 166, 140, 11);
   });
-  clipTo(ctx, top, () => {
-    // Floor plate seams.
-    ctx.strokeStyle = 'rgba(28,20,17,0.4)';
-    ctx.lineWidth = 2;
+  clipTo(ctx, rrect(8, 116, 176, 46, 12), () => {
+    // Tread plate and oil stains on the bed.
+    for (let y = 122; y < 162; y += 8)
+      for (let x = 14 + ((y / 8) % 2) * 5; x < 184; x += 10) {
+        ctx.strokeStyle = 'rgba(20,14,14,0.35)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(x - 2, y + 1.5);
+        ctx.lineTo(x + 2, y - 1.5);
+        ctx.stroke();
+      }
+    const g = ctx.createRadialGradient(96, 140, 10, 96, 140, 70);
+    g.addColorStop(0, 'rgba(16,10,10,0.5)');
+    g.addColorStop(1, 'rgba(16,10,10,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(8, 116, 176, 46);
+    grime(ctx, 8, 116, 176, 46, 38, 18);
+    chips(ctx, 8, 116, 176, 46, 43, 10);
+  });
+  // Back plate between the posts: a dark, ribbed recess so the yellow ram reads against it.
+  const back = rrect(34, 26, 124, 100, 3);
+  clipTo(ctx, back, () => {
+    ctx.fillStyle = '#2c252b';
+    ctx.fillRect(34, 26, 124, 100);
+    for (let x = 46; x < 158; x += 16) {
+      ctx.fillStyle = 'rgba(255,240,220,0.07)';
+      ctx.fillRect(x, 26, 3, 100);
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(x + 3, 26, 2, 100);
+    }
+    hatch(ctx, 34, 26, 124, 100, 5, 0.3);
+    const g = ctx.createLinearGradient(0, 26, 0, 70);
+    g.addColorStop(0, 'rgba(8,4,6,0.75)');
+    g.addColorStop(1, 'rgba(8,4,6,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(34, 26, 124, 44);
+    // Warm bounce light from the hot die onto the bottom of the plate.
+    const w = ctx.createRadialGradient(96, 128, 4, 96, 128, 46);
+    w.addColorStop(0, 'rgba(255,130,40,0.28)');
+    w.addColorStop(1, 'rgba(255,130,40,0)');
+    ctx.fillStyle = w;
+    ctx.fillRect(34, 80, 124, 46);
+  });
+  inkStroke(ctx, back, 3);
+  // Die block with a gear-shaped cavity cut into it.
+  box(ctx, 54, 126, 84, 22, 8, 5, 0x7d8994, { k: 3, lw: 3.5, seed: 39, shadow: 4 });
+  clipTo(ctx, rrect(54, 126, 84, 30, 5), () => {
+    ctx.save();
     ctx.beginPath();
-    ctx.moveTo(8, 132);
-    ctx.lineTo(184, 132);
-    ctx.moveTo(46, 10);
-    ctx.lineTo(46, 160);
-    ctx.moveTo(146, 10);
-    ctx.lineTo(146, 160);
-    ctx.stroke();
-    grime(ctx, 8, 10, 176, 150, 37, 34);
-    scratches(ctx, 10, 12, 172, 146, 8, 10);
-    chips(ctx, 8, 10, 176, 150, 41, 16);
+    ctx.rect(54, 148, 84, 8);
+    ctx.clip();
+    ctx.fillStyle = css(0x7d8994, -0.35);
+    ctx.fillRect(54, 148, 84, 8);
+    hatch(ctx, 90, 148, 48, 8, 3.5, 0.5);
+    ctx.restore();
   });
-  // Pipes along the back.
-  for (const [y, col] of [
-    [17, PALETTE.rust],
-    [26, PALETTE.teal],
-  ] as const) {
-    cel(ctx, rrect(18, y, 156, 7, 3.5), col, { k: 1.5, lw: 2.6, drop: 2, hatch: false });
-    for (const x of [40, 96, 152]) cel(ctx, rrect(x - 3, y - 2, 6, 11, 1.5), 0x4d525c, { k: 1, lw: 2, drop: 0, hatch: false });
-  }
-  // Die bed: recessed, hazard-rimmed, shadowed on its upper-left inner edge.
-  const { bx, by, bed } = FAB;
-  const h = bed / 2;
-  cel(ctx, rrect(bx - h - 6, by - h - 6, bed + 12, bed + 12, 8), 0x4d525c, { k: 3, lw: 3.5, drop: 0, hatch: false });
-  ctx.save();
+  inkStroke(ctx, rrect(54, 126, 84, 30, 5), 3.5);
+  const cav = poly(flatGear(96, FAB.dieY, 17, 22, 12, 0.36));
   ctx.beginPath();
-  ctx.rect(bx - h, by - h, bed, bed);
-  ctx.clip();
-  stripes(ctx, bx - h, by - h, bed, bed, 16);
-  ctx.fillStyle = '#211a1d';
-  ctx.fillRect(bx - h + 8, by - h + 8, bed - 16, bed - 16);
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-  ctx.lineWidth = 1;
-  for (let i = 1; i < 6; i++) {
-    const o = bx - h + 8 + ((bed - 16) / 6) * i;
+  cav(ctx, 0, 0);
+  ctx.fillStyle = '#16100f';
+  ctx.fill();
+  clipTo(ctx, cav, () => {
+    // Lit far wall of the cavity (bottom-right inside edge catches the top-left light).
     ctx.beginPath();
-    ctx.moveTo(o, by - h + 8);
-    ctx.lineTo(o, by + h - 8);
-    ctx.moveTo(bx - h + 8, by - h + 8 + ((bed - 16) / 6) * i);
-    ctx.lineTo(bx + h - 8, by - h + 8 + ((bed - 16) / 6) * i);
+    cav(ctx, -2, -2.5);
+    ctx.strokeStyle = 'rgba(200,210,220,0.55)';
+    ctx.lineWidth = 3;
     ctx.stroke();
+  });
+  inkStroke(ctx, cav, 2.2);
+  rivets(ctx, [
+    [60, 131],
+    [132, 131],
+  ], 2);
+  // Guide posts with foot and head collars.
+  for (const x of FAB.postX) {
+    column(ctx, x, 22, 134, 16, 0xb9c3cc, { chrome: true });
+    cel(ctx, rrect(x - 11, 124, 22, 12, 3), 0x5a626c, { k: 2, lw: 3, drop: 0, hatch: false });
+    gloss(ctx, rrect(x - 11, 124, 22, 12, 3), x - 11, 124, 22, 12);
+    rivets(ctx, [
+      [x - 6, 130],
+      [x + 6, 130],
+    ], 1.8);
   }
-  ctx.fillStyle = 'rgba(10,6,6,0.55)';
-  ctx.fillRect(bx - h, by - h, bed, 7);
-  ctx.fillRect(bx - h, by - h, 7, bed);
-  ctx.restore();
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 3.5;
-  ctx.strokeRect(bx - h, by - h, bed, bed);
-  // Guide columns at the bed corners.
-  for (const [x, y] of [
-    [bx - h - 1, by - h - 1],
-    [bx + h + 1, by - h - 1],
-    [bx - h - 1, by + h + 1],
-    [bx + h + 1, by + h + 1],
-  ]) {
-    drum(ctx, x, y - 4, 9, 6, 0xb9c3cc, { k: 2, lw: 3, shadow: 5 });
-    ctx.fillStyle = INK;
+  // Hydraulic cylinders hanging from the crown, with gland nuts at the bottom and a hose each.
+  for (const x of FAB.rodX) {
+    const hx = x < 96 ? x - 24 : x + 24;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 7;
+    ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.arc(x, y - 4, 3, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(x + (x < 96 ? -10 : 10), 50);
+    ctx.quadraticCurveTo(hx, 54, hx, 34);
+    ctx.stroke();
+    ctx.strokeStyle = '#2b2b33';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+    column(ctx, x, 30, 62, 26, PALETTE.rust, { lw: 3.5, r: 4 });
+    for (const y of [34, 54]) {
+      cel(ctx, rrect(x - 14, y, 28, 6, 2), 0x5a626c, { k: 1.5, lw: 2.5, drop: 0, hatch: false });
+    }
+    cel(ctx, rrect(x - 9, 60, 18, 6, 2), 0x3b3f48, { k: 1.2, lw: 2.5, drop: 0, hatch: false });
   }
-  // Recipe screen (right side).
-  cel(ctx, rrect(152, 44, 28, 32, 5), 0x4d525c, { k: 2, lw: 3, drop: 3, hatch: false });
+  // Crown beam: lit top face, a big yellow front face with a stencilled plate, lamp and screen.
+  box(ctx, 6, 4, 180, 10, 20, 9, PALETTE.hazard, { k: 4, seed: 41, shadow: 0, wall: shade(PALETTE.hazard, -0.22) });
+  clipTo(ctx, rrect(6, 4, 180, 30, 9), () => {
+    grime(ctx, 6, 4, 180, 30, 47, 22);
+    scratches(ctx, 8, 6, 176, 26, 12, 10);
+    chips(ctx, 6, 4, 180, 30, 49, 16);
+  });
+  cel(ctx, rrect(72, 17, 48, 14, 3), 0x3b3f48, { k: 1.5, lw: 2.5, drop: 0, hatch: false });
+  stencil(ctx, 'FAB-3', 96, 24.5, 10, 'rgba(242,182,50,0.9)');
+  // Screen housing (recipe icon sits on it at runtime).
+  cel(ctx, rrect(152, 15, 26, 18, 4), 0x3b3f48, { k: 1.5, lw: 2.8, drop: 0, hatch: false });
   ctx.fillStyle = '#10261f';
   ctx.beginPath();
-  ctx.roundRect(156, 48, 20, 22, 3);
+  ctx.roundRect(155, 18, 20, 12, 2);
   ctx.fill();
   ctx.strokeStyle = INK;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.8;
   ctx.stroke();
-  // Steam vent grille (right, lower).
-  cel(ctx, rrect(154, 96, 24, 26, 4), 0x3b3439, { k: 1.5, lw: 3, drop: 2, hatch: false });
-  vents(ctx, 158, 100, 4, 2.5, 18, 5);
-  // Flywheel housing (left) and pressure gauge.
-  cel(ctx, circle(27, 112, 17), 0x2e282c, { k: 2, lw: 3.5, drop: 3, hatch: false });
-  cel(ctx, circle(27, 58, 10), 0xece0c2, { k: 1.5, lw: 3, drop: 2, hatch: false });
-  ctx.strokeStyle = '#2f9e95';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(27, 58, 6.5, Math.PI * 0.8, Math.PI * 1.7);
-  ctx.stroke();
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(27, 58);
-  ctx.lineTo(31, 53);
-  ctx.stroke();
+  // Lamp socket.
+  cel(ctx, circle(22, 24, 8), 0x3b3f48, { k: 1.5, lw: 2.5, drop: 0, hatch: false });
   rivets(ctx, [
-    [18, 20],
-    [174, 20],
-    [18, 150],
-    [174, 150],
-    [27, 82],
-  ]);
-  stencil(ctx, 'FAB-3', 166, 141, 9, 'rgba(28,20,17,0.6)');
+    [42, 24],
+    [58, 24],
+    [134, 24],
+    [146, 24],
+    [12, 9],
+    [180, 9],
+  ], 2);
+  // Flywheel housing (left of the die) and a pressure gauge (right).
+  cel(ctx, circle(31, 149, 12), 0x2e282c, { k: 2, lw: 3, drop: 0, hatch: false });
+  cel(ctx, circle(161, 149, 11), 0xece0c2, { k: 1.5, lw: 3, drop: 0, hatch: false });
+  ctx.strokeStyle = '#2f9e95';
+  ctx.lineWidth = 2.6;
+  ctx.beginPath();
+  ctx.arc(161, 149, 7.5, Math.PI * 0.75, Math.PI * 1.55);
+  ctx.stroke();
+  ctx.strokeStyle = css(PALETTE.rust, 0.1);
+  ctx.beginPath();
+  ctx.arc(161, 149, 7.5, Math.PI * 1.95, Math.PI * 2.25);
+  ctx.stroke();
+  litRim(ctx);
   tex.refresh();
-  // Icon / placement ghost: the body with the press head at rest.
+
+  // Rod: chrome, stretched vertically at runtime (origin at its top).
+  const [cr, tr] = canvas(scene, 'fab-rod', 14, 40);
+  column(cr, 7, -6, 46, 9, 0xd0d8df, { lw: 2.5, r: 0, chrome: true });
+  tr.refresh();
+
+  // Ram head.
+  const [cm, tm] = canvas(scene, 'fab-ram', RAM.w, RAM.h);
+  drawRam(cm);
+  tm.refresh();
+
+  // Half-formed part in the die: teeth cut on the right, the left still a raw blank.
+  const [cb, tb] = canvas(scene, 'fab-blank', 56, 30);
+  const side = poly(flatGear(28, 16, 15, 20, 12, 0.36, -1.9, 1.9));
+  cel(cb, side, 0x5a626c, { k: 0, lw: 2.4, drop: 0, hatch: false });
+  const topFace = poly(flatGear(28, 12, 15, 20, 12, 0.36, -1.9, 1.9));
+  cb.fillStyle = css(0x5a626c, -0.3);
+  cb.fillRect(8, 12, 40, 4);
+  cel(cb, topFace, 0xa3adb7, { k: 2, lw: 2.4, drop: 0, hatch: false });
+  cb.fillStyle = '#2e282c';
+  cb.beginPath();
+  cb.ellipse(28, 12, 6, 2.3, 0, 0, Math.PI * 2);
+  cb.fill();
+  cb.strokeStyle = INK;
+  cb.lineWidth = 1.6;
+  cb.stroke();
+  tb.refresh();
+
+  // Icon / placement ghost: the press at rest.
   const [ci, ti] = canvas(scene, 'assembler', S, S);
-  ci.drawImage(tex.getSourceImage() as HTMLCanvasElement, 0, 0);
-  drawPressHead(ci, bx, by);
+  const src = (k: string) => scene.textures.get(k).getSourceImage() as HTMLCanvasElement;
+  ci.drawImage(src('assembler-body'), 0, 0);
+  ci.drawImage(src('fab-blank'), 96 - 28, FAB.dieY - 13);
+  const ramTop = FAB.rest - RAM.oy;
+  for (const x of FAB.rodX) ci.drawImage(src('fab-rod'), x - 7, FAB.rodTop, 14, ramTop + 4 - FAB.rodTop);
+  ci.drawImage(src('fab-ram'), 96 - RAM.cx, ramTop);
   ti.refresh();
 
-  const [c2, t2] = canvas(scene, 'fab-head', 80, 80);
-  drawPressHead(c2, 40, 40);
-  t2.refresh();
-  const [c3, t3] = canvas(scene, 'fab-head-shadow', 80, 80);
-  c3.fillStyle = 'rgba(12,6,4,1)';
-  c3.beginPath();
-  poly(octagon(40, 40, 34, 10))(c3, 0, 0);
-  c3.fill();
-  t3.refresh();
+  // Flywheel.
   const [c4, t4] = canvas(scene, 'fab-gear', 36, 36);
   cel(c4, gearPath(18, 18, 12, 16, 10), 0xb0b9c2, { k: 2, lw: 2.5, drop: 0 });
   c4.fillStyle = '#2e282c';
@@ -909,61 +1100,64 @@ function makeFabricator(scene: Phaser.Scene) {
   t4.refresh();
 }
 
-function octagon(cx: number, cy: number, r: number, cut: number): [number, number][] {
-  return [
-    [cx - r + cut, cy - r],
-    [cx + r - cut, cy - r],
-    [cx + r, cy - r + cut],
-    [cx + r, cy + r - cut],
-    [cx + r - cut, cy + r],
-    [cx - r + cut, cy + r],
-    [cx - r, cy + r - cut],
-    [cx - r, cy - r + cut],
-  ];
-}
-
-function drawPressHead(c: Ctx, cx: number, cy: number) {
-  const oct = poly(octagon(cx, cy, 34, 10));
-  cel(c, oct, PALETTE.hazard, { k: 4, lw: 3.5, drop: 0 });
-  clipTo(c, oct, () => {
+/** The ram head: a yellow crosshead riding the two posts on bronze bushings, rod clevises on top,
+ *  and a dark steel punch underneath whose face is the texture's origin row. */
+function drawRam(c: Ctx) {
+  // Punch first so the block's front wall overlaps its top.
+  cel(c, rrect(54, 32, 60, 12, 3), 0x4d525c, { k: 2, lw: 3, drop: 0, hatch: true });
+  c.fillStyle = 'rgba(255,240,220,0.35)';
+  c.fillRect(58, 40, 52, 1.5);
+  // Bushings round the posts.
+  for (const x of [16, 152]) {
+    cel(c, rrect(x - 14, 8, 28, 28, 6), 0xb08a4a, { k: 3, lw: 3, drop: 0, hatch: true });
+    gloss(c, rrect(x - 14, 8, 28, 28, 6), x - 14, 8, 28, 28);
+    c.strokeStyle = 'rgba(28,20,17,0.6)';
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(x - 13, 22);
+    c.lineTo(x + 13, 22);
+    c.stroke();
+    rivets(c, [
+      [x - 7, 15],
+      [x + 7, 15],
+      [x - 7, 29],
+      [x + 7, 29],
+    ], 1.7);
+  }
+  // Crosshead.
+  box(c, 22, 4, 124, 9, 23, 5, PALETTE.hazard, { k: 3, lw: 3.5, seed: 57, shadow: 0, wall: shade(PALETTE.hazard, -0.18) });
+  clipTo(c, rrect(22, 4, 124, 32, 5), () => {
     c.save();
     c.beginPath();
-    c.rect(cx - 34, cy - 34, 68, 68);
-    c.rect(cx - 26, cy - 26, 52, 52);
-    c.clip('evenodd');
-    stripes(c, cx - 34, cy - 34, 68, 68, 12);
-    hatch(c, cx, cy - 34, 34, 68, 4, 0.35);
+    c.rect(22, 15, 124, 19);
+    c.clip();
+    stripes(c, 22, 15, 124, 19, 16);
+    hatch(c, 92, 15, 54, 19, 4, 0.4);
     c.restore();
-    chips(c, cx - 34, cy - 34, 68, 68, 77, 8);
+    c.strokeStyle = INK;
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(22, 14);
+    c.lineTo(146, 14);
+    c.stroke();
+    chips(c, 22, 4, 124, 32, 59, 10);
+    scratches(c, 24, 6, 120, 8, 61, 5);
   });
-  inkStroke(c, oct, 3.5);
-  cel(c, rrect(cx - 25, cy - 25, 50, 50, 5), 0x7d8994, { k: 3, lw: 3, drop: 0 });
-  c.strokeStyle = 'rgba(28,20,17,0.6)';
-  c.lineWidth = 2.5;
-  c.beginPath();
-  c.moveTo(cx - 25, cy);
-  c.lineTo(cx + 25, cy);
-  c.moveTo(cx, cy - 25);
-  c.lineTo(cx, cy + 25);
-  c.stroke();
-  cel(c, circle(cx, cy, 13), 0xc9d2da, { k: 2.5, lw: 3, drop: 0, hatch: false });
-  c.fillStyle = INK;
-  c.beginPath();
-  c.arc(cx, cy, 4, 0, Math.PI * 2);
-  c.fill();
-  rivets(c, [
-    [cx - 19, cy - 19],
-    [cx + 19, cy - 19],
-    [cx - 19, cy + 19],
-    [cx + 19, cy + 19],
-  ]);
+  inkStroke(c, rrect(22, 4, 124, 32, 5), 3.5);
+  cel(c, rrect(66, 17, 36, 14, 3), 0x3b3f48, { k: 1.5, lw: 2.4, drop: 0, hatch: false });
+  stencil(c, '40T', 84, 24.5, 9, 'rgba(242,182,50,0.9)');
+  // Rod clevises.
+  for (const x of [56, 112]) {
+    cel(c, rrect(x - 8, 0, 16, 10, 2), 0x5a626c, { k: 1.5, lw: 2.5, drop: 0, hatch: false });
+    rivets(c, [[x, 5]], 2);
+  }
 }
 
 // Crate 1x1: wooden crate with steel brackets, a label plate showing the contents, a fill gauge.
 function makeCrate(scene: Phaser.Scene) {
   const [ctx, tex] = canvas(scene, 'chest', TILE, TILE);
   const top = rrect(9, 7, 46, 36, 4);
-  box(ctx, 9, 7, 46, 36, 13, 4, 0xa8733e, { k: 4, lw: 3.5, seed: 51, wall: 0x5e3a1c });
+  box(ctx, 9, 7, 46, 36, 13, 4, 0xa8733e, { k: 4, lw: 3.5, seed: 51, wall: 0x5e3a1c, shadow: 0 });
   clipTo(ctx, top, () => {
     ctx.strokeStyle = 'rgba(28,20,17,0.5)';
     ctx.lineWidth = 1.6;
@@ -1021,6 +1215,7 @@ function makeCrate(scene: Phaser.Scene) {
   ctx.strokeStyle = INK;
   ctx.lineWidth = 2;
   ctx.stroke();
+  litRim(ctx);
   tex.refresh();
 }
 
@@ -1044,10 +1239,6 @@ function makeElevator(scene: Phaser.Scene) {
   const d = 16;
   const outer = hexPts(cx, cy, 88, 82, 40);
   const hull = poly([outer[0], outer[1], [outer[2][0], outer[2][1] + d], [outer[3][0], outer[3][1] + d], [outer[4][0], outer[4][1] + d], outer[5]]);
-  ctx.beginPath();
-  hull(ctx, 6, 9);
-  ctx.fillStyle = 'rgba(28,12,6,0.4)';
-  ctx.fill();
   clipTo(ctx, hull, () => {
     ctx.fillStyle = css(PALETTE.steel, -0.55);
     ctx.fillRect(0, 0, S, S);
@@ -1072,6 +1263,7 @@ function makeElevator(scene: Phaser.Scene) {
   });
   const deck = poly(outer);
   cel(ctx, deck, PALETTE.steel, { k: 9, lw: 3, drop: 0 });
+  gloss(ctx, deck, 8, 6, 176, 164);
   // Hazard rim and diamond plate inside it.
   const inner = hexPts(cx, cy, 74, 68, 33);
   clipTo(ctx, deck, () => {
@@ -1156,6 +1348,7 @@ function makeElevator(scene: Phaser.Scene) {
     const ly = cy + (y - cy) * 0.9;
     cel(ctx, circle(lx, ly, 7), 0x3a3140, { k: 1, lw: 2.5, drop: 2, hatch: false });
   }
+  litRim(ctx);
   tex.refresh();
 
   const [c2, t2] = canvas(scene, 'elevator-ring', 64, 64);
@@ -1197,7 +1390,7 @@ function makeCargoDrop(scene: Phaser.Scene) {
   const S = TILE * 2;
   const [ctx, tex] = canvas(scene, 'importer', S, S);
   const { cx, cy, r, d } = DROP;
-  drum(ctx, cx, cy, r, d, 0x4b4552, { k: 6, lw: 4, shadow: 7 });
+  drum(ctx, cx, cy, r, d, 0x4b4552, { k: 6, lw: 4, shadow: 0 });
   // Hazard skirt on the wall.
   ctx.save();
   ctx.beginPath();
@@ -1218,6 +1411,7 @@ function makeCargoDrop(scene: Phaser.Scene) {
   ctx.stroke();
   // Deck.
   cel(ctx, circle(cx, cy, r), 0x4b4552, { k: 6, lw: 4, drop: 0 });
+  gloss(ctx, circle(cx, cy, r), cx - r, cy - r, r * 2, r * 2, 0.8);
   clipTo(ctx, circle(cx, cy, r - 2), () => {
     const g = ctx.createRadialGradient(cx, cy, 6, cx, cy, r);
     g.addColorStop(0, 'rgba(18,10,10,0.75)');
@@ -1262,6 +1456,7 @@ function makeCargoDrop(scene: Phaser.Scene) {
     cel(ctx, circle(cx + Math.cos(a) * (r - 8), cy + Math.sin(a) * (r - 8), 5.5), 0x2b2326, { k: 1, lw: 2.2, drop: 0, hatch: false });
   }
   stencil(ctx, 'DROP', cx, cy + 22, 8, 'rgba(242,182,50,0.55)');
+  litRim(ctx);
   tex.refresh();
 
   // The pod seen from above: a capsule with four fins and a hatch.
@@ -1475,7 +1670,7 @@ function makeGrabber(scene: Phaser.Scene) {
   // Base plate with hazard corners and the fixed turret housing (bevelled, two-tone).
   {
     const [ctx, tex] = canvas(scene, 'inserter-base', TILE, TILE);
-    box(ctx, 9, 10, 46, 36, 8, 7, 0x4d525c, { k: 3, lw: 3.5, seed: 91, shadow: 6 });
+    box(ctx, 9, 10, 46, 36, 8, 7, 0x4d525c, { k: 3, lw: 3.5, seed: 91, shadow: 0 });
     for (const [x, y, sx, sy] of [
       [9, 10, 1, 1],
       [55, 10, -1, 1],
@@ -1515,6 +1710,7 @@ function makeGrabber(scene: Phaser.Scene) {
     ctx.beginPath();
     ctx.arc(32, HUB_Y, 16, 0, Math.PI * 2);
     ctx.fill();
+    litRim(ctx);
     tex.refresh();
   }
   // Slewing ring: steel annulus with bolts and a hazard segment so its rotation reads.
@@ -1991,6 +2187,30 @@ export function machineView(h: MachineHost, e: Entity): View | null {
   }
 }
 
+/** Soft contact shadow under a machine body, cast to the lower right from its own silhouette. */
+function contactShadow(scene: Phaser.Scene, key: string, x: number, y: number, depth = 3.95): Img {
+  const sk = `${key}-cs`;
+  if (!scene.textures.exists(sk)) {
+    const src = scene.textures.get(key).getSourceImage() as HTMLCanvasElement;
+    const P = 24;
+    const [c, t] = canvas(scene, sk, src.width + P * 2, src.height + P * 2);
+    for (const [blur, dx, dy, a] of [
+      [16, 8, 11, 0.5],
+      [5, 2, 4, 0.6],
+    ]) {
+      c.save();
+      c.shadowColor = `rgba(24,10,4,${a})`;
+      c.shadowBlur = blur;
+      c.shadowOffsetX = 4000 + dx;
+      c.shadowOffsetY = dy;
+      c.drawImage(src, P - 4000, P);
+      c.restore();
+    }
+    t.refresh();
+  }
+  return scene.add.image(x, y, sk).setDepth(depth);
+}
+
 function clock() {
   let last = -1;
   return (time: number) => {
@@ -2011,6 +2231,7 @@ function drillView(h: MachineHost, e: Entity): View {
   const cy = (e.y + e.size / 2) * TILE;
   const bitX = cx - TILE + 64;
   const bitY = cy - TILE + 60;
+  const shadow = contactShadow(scene, 'miner-body', cx, cy);
   const body = scene.add.image(cx, cy, 'miner-body').setDepth(4);
   const bit = scene.add.image(bitX, bitY, 'miner-head').setDepth(4.1);
   const blur = scene.add.image(bitX, bitY, 'miner-blur').setDepth(4.15).setAlpha(0);
@@ -2031,7 +2252,7 @@ function drillView(h: MachineHost, e: Entity): View {
   let nextPuff = 0;
   let kick = 0;
   return {
-    parts: [body, bit, blur, chute, ...lampParts(lamp)],
+    parts: [shadow, body, bit, blur, chute, ...lampParts(lamp)],
     update: (m, time) => {
       if (m.kind !== 'miner') return;
       const d = dt(time);
@@ -2075,6 +2296,7 @@ function smelterView(h: MachineHost, e: Entity): View {
   const ox = cx - TILE;
   const oy = cy - TILE;
   const ground = scene.add.image(cx, cy + 14, 'glow').setDepth(3.5).setScale(3.4, 2.6).setTint(0xff7a1a).setBlendMode(Phaser.BlendModes.ADD).setAlpha(0);
+  const shadow = contactShadow(scene, 'furnace', cx, cy);
   const body = scene.add.image(cx, cy, 'furnace').setDepth(4);
   const pool = scene.add.image(ox + 54, oy + 50, 'smelter-pool').setDepth(4.05).setAlpha(0);
   const poolGlow = scene.add.image(ox + 54, oy + 50, 'glow').setDepth(4.06).setScale(1.5).setTint(0xffa030).setBlendMode(Phaser.BlendModes.ADD).setAlpha(0);
@@ -2089,7 +2311,7 @@ function smelterView(h: MachineHost, e: Entity): View {
   let nextPuff = 0;
   let flash = 0;
   return {
-    parts: [ground, body, pool, poolGlow, slits, slitGlow, needle, ...lampParts(lamp)],
+    parts: [ground, shadow, body, pool, poolGlow, slits, slitGlow, needle, ...lampParts(lamp)],
     update: (f, time) => {
       if (f.kind !== 'furnace') return;
       const d = dt(time);
@@ -2124,72 +2346,165 @@ function smelterView(h: MachineHost, e: Entity): View {
 }
 
 function fabricatorView(h: MachineHost, e: Entity): View {
-  const { scene, fx } = h;
+  const { scene, world, fx } = h;
   const cx = (e.x + e.size / 2) * TILE;
   const cy = (e.y + e.size / 2) * TILE;
   const ox = cx - TILE * 1.5;
   const oy = cy - TILE * 1.5;
-  const hx = ox + FAB.bx;
-  const hy = oy + FAB.by;
+  const ADD = Phaser.BlendModes.ADD;
+  const shadow = contactShadow(scene, 'assembler-body', cx, cy);
   const body = scene.add.image(cx, cy, 'assembler-body').setDepth(4);
-  const gear = scene.add.image(ox + 27, oy + 112, 'fab-gear').setDepth(4.05);
-  const shadow = scene.add.image(hx, hy, 'fab-head-shadow').setDepth(4.06).setAlpha(0.4);
-  const head = scene.add.image(hx, hy, 'fab-head').setDepth(4.1);
-  const screen = scene.add.image(ox + 166, oy + 59, 'glow').setDepth(4.05).setTint(0x5dffb0).setBlendMode(Phaser.BlendModes.ADD).setScale(0.55, 0.6).setAlpha(0.35);
-  const icon = scene.add.image(ox + 166, oy + 59, 'px').setDepth(4.07).setScale(0.68);
-  const lamp = makeLamp(scene, ox + 166, oy + 33, 4.3, 0.8);
+  const wheel = scene.add.image(ox + 31, oy + 149, 'fab-gear').setDepth(4.01).setScale(0.62);
+  const needle = scene.add.image(ox + 161, oy + 149.5, 'needle').setOrigin(0.5, 13 / 16).setDepth(4.01).setScale(0.75);
+  const blank = scene.add.image(ox + 96, oy + FAB.dieY - 1, 'fab-blank').setDepth(4.02).setVisible(false);
+  const blankHot = scene.add.image(ox + 96, oy + FAB.dieY - 1, 'fab-blank').setDepth(4.021).setTint(0xff7a20).setBlendMode(ADD).setAlpha(0);
+  const heat = scene.add.image(ox + 96, oy + FAB.dieY, 'glow').setDepth(4.025).setTint(0xff6a10).setBlendMode(ADD).setScale(1.2, 0.5).setAlpha(0);
+  const ramShadow = scene.add.image(ox + 99, oy + FAB.dieY + 2, 'glow').setDepth(4.03).setTint(0x000000).setScale(1.7, 0.4).setAlpha(0);
+  const rods = FAB.rodX.map((x) => scene.add.image(ox + x, oy + FAB.rodTop, 'fab-rod').setOrigin(0.5, 0).setDepth(4.04));
+  const ram = scene.add.image(ox + 96, oy + FAB.rest, 'fab-ram').setOrigin(RAM.cx / RAM.w, RAM.oy / RAM.h).setDepth(4.05);
+  const chute = scene.add.image(0, 0, 'chute').setDepth(4.06).setVisible(false);
+  const tray = scene.add.image(0, 0, 'px').setDepth(4.07).setVisible(false);
+  const part = scene.add.image(0, 0, 'px').setDepth(9.4).setVisible(false);
+  const screen = scene.add.image(ox + 165, oy + 24, 'glow').setDepth(4.06).setTint(0x5dffb0).setBlendMode(ADD).setScale(0.5, 0.36).setAlpha(0.35);
+  const icon = scene.add.image(ox + 165, oy + 24, 'px').setDepth(4.07).setScale(0.42);
+  const lamp = makeLamp(scene, ox + 22, oy + 24, 4.3, 0.8);
   const dt = clock();
-  let lift = 0.5;
-  let prog = 0;
-  let wheel = 0;
-  let wheelSpd = 0;
-  let shake = 0;
+  let ramY: number = FAB.rest;
+  let prevP = 0;
+  let wasCrafting = false;
+  let lastOut = e.kind === 'assembler' ? e.outputCount : 0;
+  let impactAt = -1e9;
+  let spitAt = -1e9;
+  let blankIn = 0;
+  let spin = 0;
+  let wheelA = 0;
+  let pressure = 0;
+  let nextScan = 0;
   let nextHiss = 0;
+  // Where finished parts go: the mouth of a chute on the side facing the output grabber.
+  let out: { x: number; y: number; dx: number; dy: number } | null = null;
+  const SPIT = 0.42;
   return {
-    parts: [body, gear, shadow, head, screen, icon, ...lampParts(lamp)],
+    parts: [shadow, body, wheel, needle, blank, blankHot, heat, ramShadow, ...rods, ram, chute, tray, part, screen, icon, ...lampParts(lamp)],
     update: (a, time) => {
       if (a.kind !== 'assembler') return;
       const d = dt(time);
-      let slam = false;
-      if (a.progress < prog - 0.5 || (prog > 0.8 && !a.crafting)) slam = true;
-      prog = a.progress;
-      if (a.crafting) {
-        // Wind up slowly, hang, then slam down at the end of the cycle.
-        const p = a.progress;
-        lift = p < 0.6 ? Math.sin((p / 0.6) * (Math.PI / 2)) : p < 0.82 ? 1 : 1 - ((p - 0.82) / 0.18) ** 2;
-      } else lift = approach(lift, 0.35, 3, d);
-      if (slam) {
-        lift = 0;
-        shake = 1;
-        const hw = 34;
-        for (const [sx, sy] of [
-          [-1, -1],
-          [1, -1],
-          [-1, 1],
-          [1, 1],
-        ])
-          fx.sparks(hx + sx * hw, hy + sy * hw, 3, [Math.atan2(sy, sx) * 57.3 - 40, Math.atan2(sy, sx) * 57.3 + 40], [100, 240]);
-        fx.dustRing(hx, hy + 4, 1.3);
-        fx.steam(ox + 166, oy + 96, 0.8);
-        fx.steam(ox + 166, oy + 100, 0.6);
+      if (time > nextScan) {
+        nextScan = time + 800;
+        out = null;
+        for (const o of world.entities.values()) {
+          if (o.kind !== 'inserter' || world.entityAt(o.x - DX[o.dir], o.y - DY[o.dir]) !== a) continue;
+          const ex = (o.x + 0.5 - DX[o.dir] * 0.5) * TILE;
+          const ey = (o.y + 0.5 - DY[o.dir] * 0.5) * TILE;
+          out = { x: ex - DX[o.dir] * 13, y: ey - DY[o.dir] * 13, dx: DX[o.dir], dy: DY[o.dir] };
+          chute.setPosition(out.x, out.y).setAngle(o.dir * 90);
+          break;
+        }
+        chute.setVisible(!!out);
       }
-      if (!slam && time > nextHiss) {
-        // A lazy hiss from the vent while idling, more often while working.
-        nextHiss = time + (a.crafting ? 900 : 2600) + Math.random() * 1200;
-        fx.steam(ox + 166, oy + 98, 0.45);
+      const outKey = a.recipe ? `item-${a.recipe.output}` : 'px';
+      const p = a.crafting ? a.progress : 1;
+      // Impact when the cycle passes 70%, or ends between two frames before we saw it.
+      const impact = wasCrafting && prevP < 0.7 && (p >= 0.7 || !a.crafting || p < prevP);
+      if (a.crafting && (!wasCrafting || p < prevP)) blankIn = 0;
+      let sx = 1;
+      let sy = 1;
+      if (a.crafting && p < 0.7 && !(impact && p < prevP)) {
+        if (p < 0.45) ramY = approach(ramY, FAB.up, 9, d);
+        else if (p < 0.6) ramY = FAB.up - 1.5 + Math.sin(time / 22) * 0.8;
+        else {
+          // The plunge: accelerate down, stretched along the stroke.
+          const u = (p - 0.6) / 0.1;
+          ramY = FAB.up + (FAB.down - FAB.up) * u * u;
+          sy = 1 + 0.16 * u;
+          sx = 1 - 0.07 * u;
+        }
+        pressure = approach(pressure, p < 0.6 ? 1 : 0.6, 4, d);
+      } else if (a.crafting) ramY = FAB.down;
+      else {
+        ramY = approach(ramY, FAB.rest, time - impactAt < 260 ? 0 : 4, d);
+        pressure = approach(pressure, 0.15, 2, d);
       }
-      shake = approach(shake, 0, 10, d);
-      const sx = Math.sin(time * 0.9) * shake * 1.8;
-      wheelSpd = approach(wheelSpd, a.crafting ? 1 : 0.08, 2.5, d);
-      wheel += wheelSpd * d * 9;
-      gear.setRotation(wheel);
-      body.setPosition(cx + sx * 0.5, cy);
-      head.setPosition(hx + sx, hy - lift * 14).setScale(1 + lift * 0.24);
-      shadow.setPosition(hx + 3 + lift * 12, hy + 4 + lift * 14).setScale(1 - lift * 0.04).setAlpha(0.55 - lift * 0.2);
+      if (impact) {
+        impactAt = time;
+        ramY = FAB.down;
+        const y = oy + FAB.dieY + 2;
+        fx.sparks(ox + 62, y, 10, [185, 260], [140, 320]);
+        fx.sparks(ox + 130, y, 10, [-80, -5], [140, 320]);
+        fx.sparks(ox + 96, y + 6, 5, [40, 140], [60, 160]);
+        fx.flashRing(ox + 96, y, 0xffa030, 0.7);
+        fx.dustRing(ox + 96, oy + 152, 1.4);
+        for (const x of FAB.rodX) fx.steam(ox + x + (x < 96 ? -8 : 8), oy + FAB.rodTop + 2, 0.7);
+        fx.steam(ox + 52, y - 4, 0.9);
+        fx.steam(ox + 140, y - 4, 0.9);
+        pressure = 0.2;
+      }
+      // Squash on impact: a damped wobble around the punch face.
+      const ti = (time - impactAt) / 1000;
+      if (ti < 0.7) {
+        const k = Math.exp(-ti * 9) * Math.cos(ti * 34);
+        sy = 1 - 0.2 * k;
+        sx = 1 + 0.11 * k;
+      }
+      const bump = ti < 0.3 ? Math.exp(-ti * 22) * 2 : 0;
+      body.setPosition(cx, cy + bump * 0.5);
+      ram.setPosition(ox + 96, oy + ramY).setScale(sx, sy);
+      const ramTop = ramY - RAM.oy * sy;
+      for (const r of rods) r.setScale(1, Math.max(0.05, (ramTop + 4 - FAB.rodTop) / 40));
+      ramShadow.setAlpha(Phaser.Math.Clamp(1 - (FAB.down - ramY) / 40, 0, 1) * 0.55).setScale(1.7 - (FAB.down - ramY) * 0.01, 0.4);
+      // The part in the die: drops in when a cycle starts, glows as it is worked, stays under
+      // the ram until the cycle ends.
+      blankIn = Math.min(1, blankIn + d * 6);
+      const spitT = (time - spitAt) / 1000;
+      const showBlank = !!a.recipe && a.crafting;
+      blank.setVisible(showBlank).setScale(0.7 + 0.3 * blankIn, 0.7 + 0.3 * blankIn);
+      blankHot.setVisible(showBlank).setScale(blank.scaleX, blank.scaleY).setAlpha(showBlank ? Math.min(1, p * 1.5) : 0);
+      heat.setAlpha((showBlank ? p * 0.85 : 0) + (ti < 0.5 ? (0.5 - ti) * 1.4 : 0));
+      // A finished part: spat from the die in an arc to the output chute.
+      if (a.outputCount > lastOut) {
+        spitAt = time;
+        part.setTexture(outKey);
+      }
+      lastOut = a.outputCount;
+      const tx = out ? out.x - out.dx * 3 : ox + 150;
+      const ty = out ? out.y - out.dy * 3 : oy + 152;
+      if (spitT < SPIT) {
+        const u = spitT / SPIT;
+        const x0 = ox + 96;
+        const y0 = oy + FAB.dieY - 4;
+        const arc = 22 + Math.abs(tx - x0) * 0.12;
+        const px = x0 + (tx - x0) * u;
+        const py = y0 + (ty - y0) * u - Math.sin(u * Math.PI) * arc;
+        part.setVisible(true).setPosition(px, py).setRotation(u * 9).setScale(1 + 0.45 * Math.sin(u * Math.PI));
+        if (Math.random() < 0.6) fx.spawn('fx-ember', px, py, { vx: (Math.random() - 0.5) * 30, vy: -10, drag: 2, life: 0.35, s0: 0.9, s1: 0.2, a0: 1, a1: 0, add: true, depth: 9.35 });
+      } else if (part.visible) {
+        part.setVisible(false);
+        fx.dustRing(tx, ty + 4, 0.45);
+        fx.sparks(tx, ty, 3, [200, 340], [50, 120]);
+      }
+      // Parts waiting at the chute for the grabber, settling with a little bounce.
+      const land = spitT - SPIT;
+      tray.setVisible(a.outputCount > 0 && spitT >= SPIT && !!a.recipe);
+      if (tray.visible) {
+        if (tray.texture.key !== outKey) tray.setTexture(outKey);
+        const b = land < 0.35 ? Math.abs(Math.sin(land * 18)) * Math.exp(-land * 10) * 6 : 0;
+        tray.setPosition(tx, ty - b).setScale(1 + (land < 0.15 ? (0.15 - land) * 1.2 : 0), 1 - (land < 0.15 ? (0.15 - land) * 1.2 : 0));
+      }
+      spin = approach(spin, a.crafting ? 1 : 0.06, 2.5, d);
+      wheelA += spin * d * 10;
+      wheel.setRotation(wheelA);
+      needle.setRotation(-2.2 + pressure * 3.2 + (a.crafting ? Math.sin(time / 45) * 0.05 : 0));
+      if (time > nextHiss && !impact) {
+        nextHiss = time + (a.crafting ? 1100 : 3000) + Math.random() * 1400;
+        const x = FAB.rodX[Math.random() < 0.5 ? 0 : 1];
+        fx.steam(ox + x + (x < 96 ? -8 : 8), oy + FAB.rodTop, 0.4);
+      }
       screen.setAlpha(0.3 + Math.sin(time / 140) * 0.05 + (a.crafting ? 0.12 : 0));
       icon.setVisible(!!a.recipe);
-      if (a.recipe && icon.texture.key !== `item-${a.recipe.output}`) icon.setTexture(`item-${a.recipe.output}`);
+      if (a.recipe && icon.texture.key !== outKey) icon.setTexture(outKey);
       setLamp(lamp, a.crafting ? LAMP_GO : LAMP_WAIT, a.crafting ? 1 : 0.5 + 0.5 * Math.sin(time / 260));
+      prevP = a.crafting ? p : 0;
+      wasCrafting = a.crafting;
     },
   };
 }
@@ -2198,6 +2513,7 @@ function crateView(h: MachineHost, e: Entity): View {
   const { scene } = h;
   const cx = (e.x + 0.5) * TILE;
   const cy = (e.y + 0.5) * TILE;
+  const shadow = contactShadow(scene, 'chest', cx, cy);
   const body = scene.add.image(cx, cy, 'chest').setDepth(4);
   const icon = scene.add.image(cx, cy - 7, 'px').setDepth(4.05).setScale(0.72).setVisible(false);
   const fill = scene.add.image(cx - 32 + 18, cy - 32 + 47.5, 'px').setOrigin(0, 0).setDepth(4.05).setTint(0x7dff6a);
@@ -2205,7 +2521,7 @@ function crateView(h: MachineHost, e: Entity): View {
   let count = 0;
   let bounce = 0;
   return {
-    parts: [body, icon, fill],
+    parts: [shadow, body, icon, fill],
     update: (c, time) => {
       if (c.kind !== 'chest') return;
       const d = dt(time);
@@ -2237,6 +2553,7 @@ function elevatorView(h: MachineHost, e: Entity): View {
   const cy = (e.y + e.size / 2) * TILE;
   const hx = cx - TILE * 1.5 + ELEV.cx;
   const hy = cy - TILE * 1.5 + ELEV.cy;
+  const shadow = contactShadow(scene, 'elevator', cx, cy);
   const body = scene.add.image(cx, cy, 'elevator').setDepth(4);
   const ring = scene.add.image(hx, hy, 'elevator-ring').setDepth(4.05);
   const clamps = [0, 1, 2].map((i) => scene.add.image(hx, hy, 'elevator-clamp').setDepth(4.1).setRotation((i / 3) * Math.PI * 2 + Math.PI / 6));
@@ -2247,7 +2564,7 @@ function elevatorView(h: MachineHost, e: Entity): View {
   let spin = 0;
   let rot = 0;
   return {
-    parts: [body, ring, ...clamps, ...lamps.flatMap(lampParts)],
+    parts: [shadow, body, ring, ...clamps, ...lamps.flatMap(lampParts)],
     update: (el, time) => {
       if (el.kind !== 'elevator') return;
       const d = dt(time);
@@ -2283,6 +2600,7 @@ function cargoDropView(h: MachineHost, e: Entity): View {
   const cy = (e.y + e.size / 2) * TILE;
   const px = cx - TILE + DROP.cx;
   const py = cy - TILE + DROP.cy;
+  const shadow = contactShadow(scene, 'importer', cx, cy);
   const body = scene.add.image(cx, cy, 'importer').setDepth(4);
   const chute = scene.add.image(0, 0, 'chute').setDepth(4.05);
   const podShadow = scene.add.image(px + 4, py + 6, 'glow').setDepth(4.04).setTint(0x000000).setScale(0.9);
@@ -2300,7 +2618,7 @@ function cargoDropView(h: MachineHost, e: Entity): View {
   let prog = 0;
   let pop = 0;
   return {
-    parts: [body, chute, podShadow, flame, pod, ...lamps.flatMap(lampParts)],
+    parts: [shadow, body, chute, podShadow, flame, pod, ...lamps.flatMap(lampParts)],
     update: (m, time) => {
       if (m.kind !== 'importer') return;
       const d = dt(time);
@@ -2358,6 +2676,7 @@ function grabberView(h: MachineHost, e: Entity): View {
   const sx = cx;
   const sy = cy - 32 + HUB_Y;
   const D = 5;
+  const baseShadow = contactShadow(scene, 'inserter-base', cx, cy, D - 0.05);
   const base = scene.add.image(cx, cy, 'inserter-base').setDepth(D);
   const ring = scene.add.image(sx, sy, 'inserter-ring').setDepth(D + 0.01);
   const ringLight = scene.add.image(sx, sy, 'inserter-ring-light').setDepth(D + 0.015);
@@ -2386,7 +2705,7 @@ function grabberView(h: MachineHost, e: Entity): View {
   let squash = 0;
   let prevHeld: ItemId | null | undefined;
   return {
-    parts: [base, ring, ringLight, turret, turretLight, ...lampParts(lamp), shUpper, shFore, shClaw, heldShadow, upper, rod, cyl, fore, elbow, wrist, held, fingerL, fingerR, wristCap, shoulder],
+    parts: [baseShadow, base, ring, ringLight, turret, turretLight, ...lampParts(lamp), shUpper, shFore, shClaw, heldShadow, upper, rod, cyl, fore, elbow, wrist, held, fingerL, fingerR, wristCap, shoulder],
     update: (ins, time) => {
       if (ins.kind !== 'inserter') return;
       const d = dt(time);
