@@ -451,144 +451,134 @@ function makeFx(scene: Phaser.Scene) {
   }
 }
 
-// Drill 2x2: a drill rig. A U-shaped steel deck on four splayed jack feet, open at the front over
-// the bore; a hazard-yellow lattice gantry stands on the deck's two arms and carries a top-drive
-// gearbox, which turns a fluted auger down into a dark bore hole ringed with spoil in the ore's
-// own colour. Engine, exhaust stack and hydraulic tank sit on the back of the deck.
+// Drill 2x2: one bold gantry. A hazard-yellow motor housing bridges two thick jack legs, and from
+// its belly a single big fluted auger screws down into a flanged bore in a dark steel ground skid.
+// The skid covers the deposit under the machine so nothing clutters its base; the cuttings it
+// throws up (dust and chips in the ore's own colour) burst from the bore while it works. A turning
+// top drive with a hazard wedge sits on the housing so the spin also reads from above.
 const DRILL = {
-  bore: { x: 64, y: 95 }, // hole centre on the body texture
-  head: { x: 64, y: 38 }, // top-drive gearbox centre
+  bore: { x: 64, y: 98 }, // hole centre on the body texture
+  hole: { rx: 26, ry: 11 }, // the black throat
+  flange: { rx: 34, ry: 16 }, // steel collar around it
+  drive: { x: 64, y: 21, r: 14 }, // turning top drive on the housing
   augerTop: 50, // auger texture top edge on the body texture
   frames: 8, // helix phases
-  pitch: 18, // flight spacing in px: one turn of the auger moves the flights down one pitch
+  pitch: 21, // flight spacing in px: one turn of the auger moves the flights down one pitch
 };
-const AUGER = { w: 56, h: 58, ax: 28, top: 6, R: 21 };
+const AUGER = { w: 62, h: 58, ax: 31, top: 6, R: 25 };
 
-/** A lattice beam along +x from the origin, `len` long and `w` wide: two chords and a zigzag web. */
-function truss(c: Ctx, len: number, w: number, base: number, step = 13) {
-  const rail = 4.6;
-  // Web: bold diagonals, ink first then paint, so the crossings read even when small.
-  const web = new Path2D();
-  web.moveTo(2, rail * 0.5);
-  for (let x = 2, up = true; x < len - 2; x += step / 2, up = !up) web.lineTo(Math.min(x + step / 2, len - 2), up ? w - rail * 0.5 : rail * 0.5);
-  c.lineJoin = 'miter';
-  c.strokeStyle = INK;
-  c.lineWidth = 5.2;
-  c.stroke(web);
-  c.strokeStyle = css(base, -0.18);
-  c.lineWidth = 2.4;
-  c.stroke(web);
-  c.lineJoin = 'round';
-  // Chords: the near one lit, the far one in shade.
-  for (const [y, f] of [
-    [0, 0.2],
-    [w - rail, -0.3],
-  ] as const) {
-    c.fillStyle = css(base, f);
-    c.strokeStyle = INK;
-    c.lineWidth = 2.2;
-    c.beginPath();
-    c.roundRect(0, y, len, rail, 1.5);
-    c.fill();
-    c.stroke();
-  }
-  c.fillStyle = 'rgba(255,252,236,0.55)';
-  c.fillRect(2, 1.2, len * 0.55, 1.2);
-}
-
-/** Paint a lattice beam from (x0, y0) to (x1, y1), `w` wide, centred on that line. */
-function trussAt(c: Ctx, x0: number, y0: number, x1: number, y1: number, w: number, base: number) {
-  const len = Math.hypot(x1 - x0, y1 - y0);
-  c.save();
-  c.translate(x0, y0);
-  c.rotate(Math.atan2(y1 - y0, x1 - x0));
-  c.translate(0, -w / 2);
-  truss(c, len, w, base);
-  c.restore();
-}
-
-/** The bore: a dark hole in a ragged ring of spoil, in light greys so it can be tinted to the ore. */
-function drawBore(c: Ctx, x: number, y: number, front: boolean) {
+/** The bore flange: a bolted steel collar round a black throat. `front` paints only its front half. */
+function drawFlange(c: Ctx, x: number, y: number, front: boolean) {
+  const { rx, ry } = DRILL.flange;
+  const h = DRILL.hole;
   c.save();
   if (front) {
     c.beginPath();
-    c.rect(x - 60, y, 120, 40);
+    c.rect(x - rx - 4, y + 0.5, (rx + 4) * 2, ry + 8);
     c.clip();
   }
-  // Spoil: lumps heaped around the hole, two tones and hatching on the shaded side.
-  const rng = mulberry32(77);
-  const lumps: [number, number, number][] = [];
-  for (let i = 0; i < 15; i++) {
-    const a = (i / 15) * Math.PI * 2 + rng() * 0.3;
-    const r = 1 + rng() * 0.22;
-    lumps.push([x + Math.cos(a) * 33 * r, y + Math.sin(a) * 17 * r, 6 + rng() * 4]);
-  }
+  // Collar: an ink ring, a lit steel top face and a darker front edge (it stands a little proud).
   c.fillStyle = INK;
   c.beginPath();
-  c.ellipse(x, y + 1, 40, 22, 0, 0, Math.PI * 2);
+  c.ellipse(x, y + 2, rx + 2.5, ry + 2.5, 0, 0, Math.PI * 2);
   c.fill();
-  for (const [lx, ly, lr] of lumps) {
+  c.fillStyle = css(0x5c6570, -0.25);
+  c.beginPath();
+  c.ellipse(x, y + 2, rx, ry, 0, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = css(0x8d99a4);
+  c.beginPath();
+  c.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  c.fill();
+  c.save();
+  c.beginPath();
+  c.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  c.clip();
+  c.fillStyle = css(0x8d99a4, 0.35);
+  c.beginPath();
+  c.ellipse(x - 6, y - 4, rx, ry, 0, 0, Math.PI * 2);
+  c.fill();
+  hatch(c, x + rx * 0.35, y - ry, rx, ry * 2, 3.5, 0.35, 1);
+  c.restore();
+  // Bolts round the collar.
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2 + 0.3;
+    rivets(c, [[x + Math.cos(a) * (rx - 4), y + Math.sin(a) * (ry - 2.6)]], 1.5);
+  }
+  // Throat: an ink rim, a lit back wall and a black well.
+  c.fillStyle = INK;
+  c.beginPath();
+  c.ellipse(x, y, h.rx + 2, h.ry + 2, 0, 0, Math.PI * 2);
+  c.fill();
+  if (!front) {
+    c.fillStyle = '#4a4040';
     c.beginPath();
-    poly(blob(lx, ly, lr + 2.2, (lx * 7 + ly) | 0, 7, 0.75))(c, 0, 0);
+    c.ellipse(x, y, h.rx, h.ry, 0, 0, Math.PI * 2);
     c.fill();
+    const g = c.createRadialGradient(x, y + 4, 2, x, y + 4, h.rx);
+    g.addColorStop(0, '#050303');
+    g.addColorStop(0.7, '#120c0b');
+    g.addColorStop(1, 'rgba(18,12,11,0.5)');
+    c.fillStyle = g;
+    c.beginPath();
+    c.ellipse(x, y + 3, h.rx - 1, h.ry - 2, 0, 0, Math.PI * 2);
+    c.fill();
+  } else {
+    // Only the front rim of the throat: cut the well back out so the auger shows inside it.
+    c.globalCompositeOperation = 'destination-out';
+    c.beginPath();
+    c.ellipse(x, y, h.rx, h.ry, 0, 0, Math.PI * 2);
+    c.fill();
+    c.globalCompositeOperation = 'source-over';
   }
-  c.fillStyle = '#9a9a9a';
-  c.beginPath();
-  c.ellipse(x, y + 1, 38, 20, 0, 0, Math.PI * 2);
-  c.fill();
-  for (const [lx, ly, lr] of lumps) {
-    cel(c, poly(blob(lx, ly, lr, (lx * 7 + ly) | 0, 7, 0.75)), 0xdedede, { k: 2.2, lw: 1.6, drop: 0, hatch: true });
-  }
-  // Loose chips scattered on the spoil.
-  for (let i = 0; i < 12; i++) {
-    const a = rng() * Math.PI * 2;
-    const r = 0.75 + rng() * 0.25;
-    cel(c, poly(blob(x + Math.cos(a) * 36 * r, y + Math.sin(a) * 19 * r, 1.8 + rng() * 1.6, i + 40, 5, 0.8)), 0xf4f4f4, { k: 0.8, lw: 1.1, drop: 0, hatch: false });
-  }
-  // The hole: an ink rim, a lit back wall and a black throat.
-  c.fillStyle = INK;
-  c.beginPath();
-  c.ellipse(x, y, 27.5, 13.5, 0, 0, Math.PI * 2);
-  c.fill();
-  c.fillStyle = '#4a4040';
-  c.beginPath();
-  c.ellipse(x, y, 25, 11.5, 0, 0, Math.PI * 2);
-  c.fill();
-  const g = c.createRadialGradient(x, y + 4, 2, x, y + 4, 22);
-  g.addColorStop(0, '#050303');
-  g.addColorStop(0.7, '#120c0b');
-  g.addColorStop(1, 'rgba(18,12,11,0.4)');
-  c.fillStyle = g;
-  c.beginPath();
-  c.ellipse(x, y + 3, 24, 9, 0, 0, Math.PI * 2);
-  c.fill();
-  hatch(c, x - 25, y - 12, 50, 8, 3.5, 0.35, 1);
   c.restore();
 }
 
+/** Two small heaps of cuttings either side of the bore, light grey so they can be tinted to the ore. */
+function drawSpoil(c: Ctx, x: number, y: number) {
+  const rng = mulberry32(77);
+  for (const side of [-1, 1]) {
+    const hx = x + side * 31;
+    const hy = y + 1;
+    const heap = blob(hx, hy, 9.5, side > 0 ? 5 : 8, 9, 0.6);
+    c.beginPath();
+    poly(heap)(c, 0, 0);
+    c.fillStyle = INK;
+    c.save();
+    c.translate(0, 1.5);
+    c.fill();
+    c.restore();
+    cel(c, poly(heap), 0xd6d6d6, { k: 2.4, lw: 2.2, drop: 0, hatch: true });
+    for (let i = 0; i < 3; i++) {
+      const lx = hx + (rng() - 0.5) * 11;
+      const ly = hy - 2 + (rng() - 0.5) * 5;
+      cel(c, poly(blob(lx, ly, 3 + rng() * 1.6, i * 13 + (side > 0 ? 3 : 0), 6, 0.8)), 0xf0f0f0, { k: 1, lw: 1.5, drop: 0, hatch: false });
+    }
+  }
+}
+
 /**
- * One phase of the auger seen from the front and a little above: a dark core inside a tapering
- * envelope, with helical flights whose front halves sweep down across it. `phase` in [0, 1) slides
- * the flights down by that fraction of a pitch, so cycling the phases screws the auger into the
- * ground.
+ * One phase of the auger seen from the front and a little above: a dark core inside a wide
+ * envelope, with bold helical flights whose front halves sweep down across it. `phase` in [0, 1)
+ * slides the flights down by that fraction of a pitch, so cycling the phases screws the auger into
+ * the ground.
  */
 function drawAuger(c: Ctx, phase: number) {
   const { ax, top, R } = AUGER;
   const bot = AUGER.h - 2;
   const P = DRILL.pitch;
-  // Flight radius: full down most of the length, then tapering to the pilot point.
+  // Flight radius: full down most of the length, then tapering toward the pilot point (in the hole).
   const rad = (y: number) => {
     const t = Phaser.Math.Clamp((y - top) / (bot - top), 0, 1);
-    return t < 0.6 ? R : Math.max(2, R * (1 - ((t - 0.6) / 0.4) * 0.85));
+    return t < 0.72 ? R : Math.max(4, R * (1 - ((t - 0.72) / 0.28) * 0.6));
   };
-  const core = (y: number) => Math.min(7.5, rad(y) * 0.55);
-  const e = 3.2; // the helix circle seen a little from above
-  const thick = P * 0.42;
-  const base = 0xc6d0d8;
-  // Points of one half-turn of the flight's outer edge; front half when `front`.
+  const core = (y: number) => Math.min(9, rad(y) * 0.5);
+  const e = 6.5; // the helix circle seen a little from above
+  const thick = P * 0.46;
+  const base = 0xd0d9e0;
   const edge = (yc: number, front: boolean): [number, number][] => {
     const pts: [number, number][] = [];
-    const n = 14;
+    const n = 16;
     for (let i = 0; i <= n; i++) {
       const th = (front ? -Math.PI / 2 : Math.PI / 2) + (Math.PI * i) / n;
       const y = yc + (P * th) / (Math.PI * 2) + Math.cos(th) * e;
@@ -609,247 +599,254 @@ function drawAuger(c: Ctx, phase: number) {
   c.clip();
   const ks: number[] = [];
   for (let k = -2; k < (bot - top) / P + 2; k++) ks.push(top + (k + phase) * P);
-  // Back halves of the flights: in shade, seen past the core on either side.
+  // Back halves of the flights: in deep shade, seen past the core on either side.
   for (const yc of ks) {
     const r = ribbon(edge(yc, false));
-    c.fillStyle = css(base, -0.62);
+    c.fillStyle = css(base, -0.66);
     c.fill(r);
     c.strokeStyle = INK;
-    c.lineWidth = 2;
+    c.lineWidth = 2.2;
     c.lineJoin = 'round';
     c.stroke(r);
   }
-  // Core shaft, tapering to the pilot point, lit on the left.
+  // Core shaft, lit on the left.
   const shaft = new Path2D();
   shaft.moveTo(ax - core(top), top);
   for (let y = top; y <= bot; y += 2) shaft.lineTo(ax - core(y), y);
   shaft.lineTo(ax, bot + 2);
   for (let y = bot; y >= top; y -= 2) shaft.lineTo(ax + core(y), y);
   shaft.closePath();
-  c.fillStyle = css(0x8d99a4, -0.3);
+  c.fillStyle = css(0x8d99a4, -0.35);
   c.fill(shaft);
   c.save();
   c.clip(shaft);
-  c.fillStyle = css(0x8d99a4, 0.15);
-  c.fillRect(ax - 7, top, 4.5, bot - top);
+  c.fillStyle = css(0x8d99a4, 0.1);
+  c.fillRect(ax - 8, top, 5, bot - top);
   c.restore();
   c.strokeStyle = INK;
-  c.lineWidth = 2.2;
+  c.lineWidth = 2.4;
   c.stroke(shaft);
-  // Front halves: bright steel ribbons sweeping down from left to right, three tones and a catch
-  // light along the lit half of the cutting edge.
+  // Front halves: bright steel ribbons sweeping down from left to right, three tones, a dark lip
+  // underneath and a hot catch light along the lit half of the cutting edge.
   for (const yc of ks) {
     const pts = edge(yc, true);
     const r = ribbon(pts);
     c.save();
     c.clip(r);
-    c.fillStyle = css(base, -0.08);
+    c.fillStyle = css(base, -0.1);
     c.fillRect(0, yc - P, AUGER.w, P * 3);
-    c.fillStyle = css(base, 0.32);
-    c.fillRect(0, yc - P, ax - R * 0.3, P * 3);
-    c.fillStyle = css(base, -0.42);
+    c.fillStyle = css(base, 0.4);
+    c.fillRect(0, yc - P, ax - R * 0.25, P * 3);
+    c.fillStyle = css(base, -0.48);
     c.fillRect(ax + R * 0.45, yc - P, AUGER.w, P * 3);
     hatch(c, ax + R * 0.45, yc - P, R, P * 3, 3, 0.5, 1);
-    // The flight's underside, a dark lip along its lower edge.
-    c.strokeStyle = 'rgba(28,20,17,0.55)';
-    c.lineWidth = 2.4;
+    c.strokeStyle = 'rgba(28,20,17,0.6)';
+    c.lineWidth = 3;
     c.beginPath();
     pts.forEach(([px, py], i) => (i ? c.lineTo(px, py + thick) : c.moveTo(px, py + thick)));
     c.stroke();
     c.restore();
     c.strokeStyle = INK;
-    c.lineWidth = 2.2;
+    c.lineWidth = 2.6;
     c.lineJoin = 'round';
     c.stroke(r);
-    c.strokeStyle = 'rgba(255,253,240,0.9)';
-    c.lineWidth = 1.4;
+    c.strokeStyle = 'rgba(255,253,240,0.95)';
+    c.lineWidth = 1.8;
     c.beginPath();
-    for (let i = 1; i <= 8; i++) {
+    for (let i = 1; i <= 9; i++) {
       const [px, py] = pts[i];
-      if (i === 1) c.moveTo(px, py + 1.3);
-      else c.lineTo(px, py + 1.3);
+      if (i === 1) c.moveTo(px + 0.5, py + 1.6);
+      else c.lineTo(px + 0.5, py + 1.6);
     }
     c.stroke();
   }
   // Mud toward the tip, where it has been in the ground.
   c.globalCompositeOperation = 'source-atop';
-  const mud = c.createLinearGradient(0, top + (bot - top) * 0.5, 0, bot);
+  const mud = c.createLinearGradient(0, top + (bot - top) * 0.55, 0, bot);
   mud.addColorStop(0, 'rgba(60,30,16,0)');
-  mud.addColorStop(1, 'rgba(60,30,16,0.6)');
+  mud.addColorStop(1, 'rgba(40,20,12,0.75)');
   c.fillStyle = mud;
   c.fillRect(0, top, AUGER.w, bot - top + 2);
   c.restore();
-  // Coupling collar under the gearbox.
-  cel(c, rrect(ax - 11, 0, 22, top + 3, 2.5), 0x8d99a4, { k: 1.5, lw: 2.2, drop: 0, hatch: false });
-  c.fillStyle = INK;
-  for (const bx of [ax - 6, ax, ax + 6]) {
+  // Outer ink edge of the envelope, so the spinning screw keeps one bold silhouette.
+  c.save();
+  c.beginPath();
+  c.rect(0, top, AUGER.w, bot - top + 1);
+  c.clip();
+  c.strokeStyle = INK;
+  c.lineWidth = 3;
+  c.beginPath();
+  c.moveTo(ax - rad(top), top);
+  for (let y = top; y <= bot; y += 2) c.lineTo(ax - rad(y), y);
+  c.moveTo(ax + rad(top), top);
+  for (let y = top; y <= bot; y += 2) c.lineTo(ax + rad(y), y);
+  c.stroke();
+  c.restore();
+  // Coupling collar under the housing.
+  cel(c, rrect(ax - 13, 0, 26, top + 4, 3), 0x5c6570, { k: 1.5, lw: 2.6, drop: 0, hatch: false });
+  rivets(c, [
+    [ax - 7, top / 2 + 2],
+    [ax, top / 2 + 2],
+    [ax + 7, top / 2 + 2],
+  ], 1.3);
+}
+
+/** A thick jack leg from (x0, y0) at the top to (x1, y1) on the skid: cel-shaded, bolted foot pad. */
+function jackLeg(c: Ctx, x0: number, y0: number, x1: number, y1: number, w: number) {
+  const n = Math.hypot(x1 - x0, y1 - y0);
+  const nx = ((y1 - y0) / n) * (w / 2);
+  const ny = (-(x1 - x0) / n) * (w / 2);
+  const leg = poly([
+    [x0 + nx, y0 + ny],
+    [x1 + nx * 1.15, y1 + ny],
+    [x1 - nx * 1.15, y1 - ny],
+    [x0 - nx, y0 - ny],
+  ]);
+  // Foot pad on the skid.
+  cel(c, rrect(x1 - w * 0.9, y1 - 5, w * 1.8, 11, 3), 0x5c6570, { k: 1.5, lw: 2.6, drop: 0, hatch: false });
+  rivets(c, [
+    [x1 - w * 0.6, y1 + 1],
+    [x1 + w * 0.6, y1 + 1],
+  ], 1.5);
+  clipTo(c, leg, () => {
+    c.fillStyle = css(PALETTE.hazard, -0.05);
+    c.fillRect(0, 0, 128, 128);
+    // Lit left face, shaded right face.
+    c.fillStyle = css(PALETTE.hazard, 0.3);
     c.beginPath();
-    c.arc(bx, top / 2 + 1.5, 1.3, 0, Math.PI * 2);
+    poly([
+      [x0 + nx, y0 + ny],
+      [x1 + nx * 1.15, y1 + ny],
+      [x1 + nx * 0.3, y1 + ny * 0.3],
+      [x0 + nx * 0.3, y0 + ny * 0.3],
+    ])(c, 0, 0);
     c.fill();
-  }
+    c.fillStyle = css(PALETTE.hazard, -0.45);
+    c.beginPath();
+    poly([
+      [x0 - nx * 0.35, y0 - ny * 0.35],
+      [x1 - nx * 0.35, y1 - ny * 0.35],
+      [x1 - nx * 1.2, y1 - ny],
+      [x0 - nx, y0 - ny],
+    ])(c, 0, 0);
+    c.fill();
+    hatch(c, Math.min(x0, x1) - w, y0, w * 2.5, y1 - y0, 3.5, 0.35, 1);
+    // A dark clamp band low on the leg.
+    const by = y0 + (y1 - y0) * 0.62;
+    c.fillStyle = css(0x3e434d);
+    c.fillRect(Math.min(x0, x1) - w, by, w * 3, 6);
+    c.fillStyle = 'rgba(255,248,225,0.35)';
+    c.fillRect(Math.min(x0, x1) - w, by, w * 3, 1.2);
+    drips(c, Math.min(x0, x1) - w / 2, y0, w, y1 - y0, (x0 * 3) | 0, 2);
+  });
+  inkStroke(c, leg, 3.4);
 }
 
 function makeDrill(scene: Phaser.Scene) {
   const S = TILE * 2;
   const [ctx, tex] = canvas(scene, 'miner-body', S, S);
-  const deckCol = 0x4a4f5a;
-  // Jack feet: hydraulic outriggers splayed out from the deck's back corners.
-  const foot = (fx: number, fy: number, px: number, py: number) => {
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 8;
-    ctx.beginPath();
-    ctx.moveTo(px, py);
-    ctx.lineTo(fx, fy);
-    ctx.stroke();
-    ctx.strokeStyle = css(0xb9c3cc, 0.1);
-    ctx.lineWidth = 3.4;
-    ctx.stroke();
-    ctx.lineCap = 'butt';
-    drum(ctx, fx, fy, 7, 4, PALETTE.hazard, { k: 1.5, lw: 2.6, shadow: 0 });
-    ctx.fillStyle = INK;
-    ctx.beginPath();
-    ctx.arc(fx, fy, 2.2, 0, Math.PI * 2);
-    ctx.fill();
-  };
-  foot(9, 10, 22, 20);
-  foot(119, 10, 106, 20);
-  foot(8, 52, 20, 44);
-  foot(120, 52, 108, 44);
-  // Power deck across the back: a chamfered steel skid with a hazard-striped front wall.
-  const deck = poly([
-    [20, 9],
-    [108, 9],
-    [116, 17],
-    [116, 46],
-    [12, 46],
-    [12, 17],
-  ]);
-  const dd = 10;
-  ctx.lineJoin = 'round';
-  for (let k = dd; k >= 0; k--) {
-    ctx.beginPath();
-    deck(ctx, 0, k);
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 4;
-    ctx.stroke();
+  // Cleared ground under the rig: a flat, scraped pad (light grey, tinted to the soil in the view)
+  // that covers the deposit's loose lumps so nothing clutters the machine's base.
+  {
+    const [c, t] = canvas(scene, 'miner-pad', 136, 120);
+    const ring = (rx: number, ry: number, seed: number): [number, number][] => {
+      const rng = mulberry32(seed);
+      return Array.from({ length: 28 }, (_, i) => {
+        const a = (i / 28) * Math.PI * 2;
+        const k = 0.94 + rng() * 0.08;
+        return [68 + Math.cos(a) * rx * k, 62 + Math.sin(a) * ry * k] as [number, number];
+      });
+    };
+    const pad = ring(66, 57, 211);
+    c.beginPath();
+    poly(pad)(c, 0, 0);
+    c.fillStyle = '#c9c9c9';
+    c.fill();
+    c.save();
+    c.clip();
+    c.fillStyle = '#e6e6e6';
+    c.beginPath();
+    poly(ring(58, 49, 213))(c, 0, 0);
+    c.fill();
+    // Scrape marks and a few cracks in the packed dirt.
+    c.strokeStyle = 'rgba(0,0,0,0.12)';
+    c.lineWidth = 2;
+    for (let i = 0; i < 5; i++) {
+      c.beginPath();
+      c.moveTo(24 + i * 6, 86 + i * 3);
+      c.quadraticCurveTo(60, 100 + i * 2, 100 - i * 4, 88 + i * 3);
+      c.stroke();
+    }
+    c.restore();
+    c.beginPath();
+    poly(pad)(c, 0, 0);
+    c.strokeStyle = 'rgba(40,30,30,0.35)';
+    c.lineWidth = 2;
+    c.stroke();
+    t.refresh();
   }
-  for (let k = dd; k >= 0; k--) {
-    ctx.beginPath();
-    deck(ctx, 0, k);
-    ctx.fillStyle = css(deckCol, -0.5);
-    ctx.fill();
-  }
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(13, 46, 102, dd);
-  ctx.clip();
-  stripes(ctx, 12, 46, 104, dd, 10);
-  hatch(ctx, 64, 46, 52, dd, 3.5, 0.4);
-  ctx.restore();
-  cel(ctx, deck, deckCol, { k: 4, lw: 3, drop: 0, hatch: true });
-  // Tread plate: little raised lozenges.
-  clipTo(ctx, deck, () => {
-    ctx.fillStyle = 'rgba(255,240,215,0.13)';
-    for (let y = 13; y < 46; y += 7)
-      for (let x = 14 + ((y / 7) % 2) * 4; x < 116; x += 8) {
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.rotate(((x + y) / 7) % 2 ? 0.6 : -0.6);
-        ctx.fillRect(-2.2, -0.8, 4.4, 1.6);
-        ctx.restore();
-      }
-    grime(ctx, 12, 9, 104, 37, 11, 14);
-    scratches(ctx, 14, 11, 100, 33, 5, 5);
+  // Bore flange set in the ground (its front half is repainted over the auger).
+  drawFlange(ctx, DRILL.bore.x, DRILL.bore.y, false);
+  // Two thick jack legs splayed from the housing's front corners down to bolted feet.
+  jackLeg(ctx, 28, 44, 14, 106, 16);
+  jackLeg(ctx, 100, 44, 114, 106, 16);
+  // Motor housing: one big hazard-yellow block with a dark front wall.
+  const hx = 14;
+  const hy = 4;
+  const hw = 100;
+  const hh = 34;
+  const hd = 18;
+  box(ctx, hx, hy, hw, hh, hd, 12, PALETTE.hazard, { k: 5, lw: 4.5, seed: 9, shadow: 0, wall: shade(PALETTE.hazard, -0.55) });
+  clipTo(ctx, rrect(hx, hy, hw, hh, 12), () => {
+    grime(ctx, hx, hy, hw, hh, 41, 8);
+    scratches(ctx, hx + 4, hy + 4, hw - 8, hh - 8, 43, 6);
   });
-  gloss(ctx, deck, 12, 9, 104, 37, 0.7);
-  chips(ctx, 12, 9, 104, 37, 17, 8);
-  // On the deck: engine block with vents and an exhaust stack, and a hydraulic tank.
-  box(ctx, 16, 12, 36, 16, 8, 5, 0x5a5f6a, { k: 3, lw: 3, seed: 9, shadow: 4 });
-  vents(ctx, 21, 15, 4, 3.5, 9, 7);
-  drum(ctx, 46, 14, 5.5, 6, PALETTE.steel, { k: 1.5, lw: 2.6, shadow: 3 });
+  chips(ctx, hx, hy, hw, hh, 47, 9);
+  // Cooling fins either side of the top drive.
+  vents(ctx, 24, 11, 4, 3.6, 18, 7.5);
+  vents(ctx, 86, 11, 2, 3.6, 18, 7.5);
+  // Top-drive well: an inked socket the turning drive sits in.
+  ctx.fillStyle = INK;
+  ctx.beginPath();
+  ctx.arc(DRILL.drive.x, DRILL.drive.y, DRILL.drive.r + 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  // Front wall: a dark vent grille, a stencil, bolts.
+  ctx.fillStyle = 'rgba(20,12,10,0.85)';
+  ctx.beginPath();
+  ctx.roundRect(78, hy + hh + 4, 26, 9, 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,220,140,0.35)';
+  ctx.lineWidth = 1;
+  for (let x = 81; x < 104; x += 4) {
+    ctx.beginPath();
+    ctx.moveTo(x, hy + hh + 5);
+    ctx.lineTo(x, hy + hh + 12);
+    ctx.stroke();
+  }
+  stencil(ctx, 'DR-2', 100, 31, 8, 'rgba(28,20,17,0.6)');
+  rivets(ctx, [
+    [22, 9],
+    [106, 9],
+    [22, 33],
+    [106, 33],
+  ], 1.8);
+  // Exhaust stack on the back corner.
+  drum(ctx, 104, 12, 5, 6, 0x3e434d, { k: 1.4, lw: 2.6, shadow: 2 });
   ctx.fillStyle = '#120c0b';
   ctx.beginPath();
-  ctx.arc(46, 14, 2.8, 0, Math.PI * 2);
+  ctx.arc(104, 12, 2.6, 0, Math.PI * 2);
   ctx.fill();
-  box(ctx, 80, 11, 32, 15, 8, 7.5, PALETTE.rust, { k: 2.5, lw: 3, seed: 13, shadow: 4 });
-  ctx.fillStyle = css(PALETTE.rust, 0.3);
-  ctx.fillRect(84, 14, 24, 2);
-  stencil(ctx, 'HYD', 96, 19, 7, 'rgba(28,20,17,0.6)');
-  // Derrick: two lattice legs splayed out to feet on the ground, a cross brace behind the auger and
-  // a crown beam carrying the top drive. Its soft shadow falls down and to the right onto the
-  // ground, so it reads as standing tall over the bore.
-  const crownY = 36;
-  const legs: [number, number, number, number][] = [
-    [19, 110, 43, crownY],
-    [109, 110, 85, crownY],
-  ];
-  const tw = 13;
-  const braceY = 74;
-  const legX = (l: [number, number, number, number], y: number) => l[0] + ((l[2] - l[0]) * (y - l[1])) / (l[3] - l[1]);
-  softDrop(
-    ctx,
-    (k, ox, oy) => {
-      for (const [x0, y0, x1, y1] of legs) {
-        const nx = ((y1 - y0) / Math.hypot(x1 - x0, y1 - y0)) * (tw / 2);
-        const ny = (-(x1 - x0) / Math.hypot(x1 - x0, y1 - y0)) * (tw / 2);
-        k.moveTo(x0 + nx + ox, y0 + ny + oy);
-        k.lineTo(x1 + nx + ox, y1 + ny + oy);
-        k.lineTo(x1 - nx + ox, y1 - ny + oy);
-        k.lineTo(x0 - nx + ox, y0 - ny + oy);
-        k.closePath();
-      }
-      k.rect(36 + ox, crownY - tw / 2 + oy, 56, tw);
-    },
-    10,
-    14,
-    5,
-    0.4,
-  );
-  // Hydraulic hoses from the engine up to the top drive.
-  for (const [x0, y0, x1, y1, col] of [
-    [34, 30, 50, 44, '#c4361e'],
-    [40, 30, 54, 47, '#2d2a2e'],
-  ] as const) {
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.quadraticCurveTo(x0 - 4, y1 + 4, x1, y1);
-    ctx.stroke();
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 2.4;
-    ctx.stroke();
-  }
-  ctx.lineCap = 'butt';
-  trussAt(ctx, legX(legs[0], braceY), braceY, legX(legs[1], braceY), braceY, 9, shade(PALETTE.hazard, -0.2));
-  for (const l of legs) {
-    // Bolted foot plate on the ground.
-    cel(ctx, rrect(l[0] - 11, l[1] - 5, 22, 11, 2.5), 0x8d99a4, { k: 1.5, lw: 2.4, drop: 0, hatch: false });
-    rivets(ctx, [
-      [l[0] - 7, l[1] + 0.5],
-      [l[0] + 7, l[1] + 0.5],
-    ], 1.6);
-    trussAt(ctx, l[0], l[1] - 1, l[2], l[3], tw, PALETTE.hazard);
-  }
-  trussAt(ctx, 34, crownY, 94, crownY, tw, PALETTE.hazard);
-  // Crown beam end caps.
-  for (const x of [31, 93]) {
-    cel(ctx, rrect(x, crownY - tw / 2 - 2, 5, tw + 4, 1.5), shade(PALETTE.hazard, -0.15), { k: 1, lw: 2, drop: 0, hatch: false });
-  }
-  stencil(ctx, 'DR-2', 96, 38, 7, 'rgba(255,240,210,0.45)');
   litRim(ctx);
   tex.refresh();
 
-  // Bore hole with its spoil ring, and the ring's front lip that hides the auger's tip.
-  for (const [key, front] of [
-    ['miner-bore', false],
-    ['miner-lip', true],
-  ] as const) {
-    const [c, t] = canvas(scene, key, 112, 60);
-    drawBore(c, 56, 27, front);
+  // Cuttings heaped beside the bore (tinted to the ore), and the flange's front half.
+  {
+    const [c, t] = canvas(scene, 'miner-spoil', 112, 40);
+    drawSpoil(c, 56, 20);
     t.refresh();
+    const [c2, t2] = canvas(scene, 'miner-lip', 80, 44);
+    drawFlange(c2, 40, 20, true);
+    t2.refresh();
   }
 
   // Auger: one texture per helix phase.
@@ -859,94 +856,71 @@ function makeDrill(scene: Phaser.Scene) {
     t.refresh();
   }
 
-  // Top drive: a gearbox on the crown beam with a motor housing and a turning spindle cap.
+  // Top drive, seen from above; it turns with the auger. A steel disc with a hazard wedge and five
+  // bolts, a fixed light overlay on top.
   {
-    const [c, t] = canvas(scene, 'miner-head', 48, 36);
-    box(c, 5, 4, 38, 18, 9, 5, 0x3e434d, { k: 3, lw: 3, seed: 31, shadow: 0 });
-    clipTo(c, rrect(5, 4, 38, 27, 5), () => {
-      c.save();
-      c.beginPath();
-      c.rect(5, 22, 38, 9);
-      c.clip();
-      stripes(c, 5, 22, 38, 9, 8);
-      hatch(c, 26, 22, 17, 9, 3.5, 0.4);
-      c.restore();
-    });
-    c.strokeStyle = INK;
-    c.lineWidth = 2;
-    c.beginPath();
-    c.moveTo(6, 22);
-    c.lineTo(42, 22);
-    c.stroke();
-    c.lineWidth = 3;
-    c.beginPath();
-    c.roundRect(5, 4, 38, 27, 5);
-    c.stroke();
-    // Cooling fins either side of the spindle.
-    c.fillStyle = 'rgba(16,10,9,0.75)';
-    for (const x of [8.5, 11.5, 35, 38]) c.fillRect(x, 8, 1.6, 11);
-    rivets(c, [
-      [9, 20],
-      [39, 20],
-    ], 1.4);
-    litRim(c, 2, 3);
-    t.refresh();
-    // Spindle cap, seen from above; it turns with the auger.
-    const [c2, t2] = canvas(scene, 'miner-chuck', 26, 26);
-    cel(c2, circle(13, 13, 10.5), 0x8d99a4, { k: 2, lw: 2.6, drop: 0, hatch: false });
-    c2.save();
-    c2.beginPath();
-    c2.moveTo(13, 13);
-    c2.arc(13, 13, 9.5, -0.5, 0.5);
-    c2.closePath();
-    c2.clip();
-    stripes(c2, 0, 0, 26, 26, 5);
-    c2.restore();
+    const R = DRILL.drive.r;
+    const s = R * 2 + 6;
+    const m = s / 2;
+    const [c2, t2] = canvas(scene, 'miner-chuck', s, s);
+    cel(c2, circle(m, m, R), 0x8d99a4, { k: 2, lw: 2.6, drop: 0, hatch: false });
+    for (const a0 of [-0.55, Math.PI - 0.55]) {
+      c2.save();
+      c2.beginPath();
+      c2.moveTo(m, m);
+      c2.arc(m, m, R - 1.5, a0, a0 + 1.1);
+      c2.closePath();
+      c2.clip();
+      stripes(c2, 0, 0, s, s, 6);
+      c2.restore();
+      c2.strokeStyle = INK;
+      c2.lineWidth = 1.6;
+      c2.beginPath();
+      c2.moveTo(m, m);
+      c2.arc(m, m, R - 1.5, a0, a0 + 1.1);
+      c2.closePath();
+      c2.stroke();
+    }
     c2.fillStyle = INK;
     c2.beginPath();
-    c2.arc(13, 13, 4.2, 0, Math.PI * 2);
+    c2.arc(m, m, 5.5, 0, Math.PI * 2);
+    c2.fill();
+    c2.fillStyle = css(0x8d99a4, 0.2);
+    c2.beginPath();
+    c2.arc(m, m, 3, 0, Math.PI * 2);
     c2.fill();
     for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2 + Math.PI;
-      rivets(c2, [[13 + Math.cos(a) * 7, 13 + Math.sin(a) * 7]], 1.3);
+      const a = (i / 5) * Math.PI * 2 + Math.PI / 2;
+      rivets(c2, [[m + Math.cos(a) * (R - 5), m + Math.sin(a) * (R - 5)]], 1.4);
     }
     t2.refresh();
-    const [c3, t3] = canvas(scene, 'miner-chuck-light', 26, 26);
-    discLight(c3, 13, 13, 10.5);
+    const [c3, t3] = canvas(scene, 'miner-chuck-light', s, s);
+    discLight(c3, m, m, R);
     t3.refresh();
   }
 
   // Icon / placement ghost: the whole rig in one picture, spoil in ferrite red.
   const [ci, ti] = canvas(scene, 'miner', S, S);
   {
-    const bore = scene.textures.get('miner-bore').getSourceImage() as HTMLCanvasElement;
+    const img = (k: string) => scene.textures.get(k).getSourceImage() as HTMLCanvasElement;
+    const spoil = img('miner-spoil');
     const tinted = document.createElement('canvas');
-    tinted.width = bore.width;
-    tinted.height = bore.height;
+    tinted.width = spoil.width;
+    tinted.height = spoil.height;
     const k = tinted.getContext('2d')!;
-    k.drawImage(bore, 0, 0);
+    k.drawImage(spoil, 0, 0);
     k.globalCompositeOperation = 'multiply';
     k.fillStyle = css(ITEM_LOOK['ferrite-ore'], 0.25);
-    k.fillRect(0, 0, bore.width, bore.height);
+    k.fillRect(0, 0, spoil.width, spoil.height);
     k.globalCompositeOperation = 'destination-in';
-    k.drawImage(bore, 0, 0);
-    const bx = DRILL.bore.x - 56;
-    const by = DRILL.bore.y - 27;
-    ci.drawImage(tinted, bx, by);
-    ci.drawImage(tex.getSourceImage() as HTMLCanvasElement, 0, 0);
-    ci.drawImage(scene.textures.get('miner-auger-0').getSourceImage() as HTMLCanvasElement, DRILL.head.x - AUGER.ax, DRILL.augerTop);
-    const lip = scene.textures.get('miner-lip').getSourceImage() as HTMLCanvasElement;
-    k.globalCompositeOperation = 'source-over';
-    k.clearRect(0, 0, bore.width, bore.height);
-    k.drawImage(lip, 0, 0);
-    k.globalCompositeOperation = 'multiply';
-    k.fillRect(0, 0, bore.width, bore.height);
-    k.globalCompositeOperation = 'destination-in';
-    k.drawImage(lip, 0, 0);
-    ci.drawImage(tinted, bx, by);
-    ci.drawImage(scene.textures.get('miner-head').getSourceImage() as HTMLCanvasElement, DRILL.head.x - 24, DRILL.head.y - 18);
-    ci.drawImage(scene.textures.get('miner-chuck').getSourceImage() as HTMLCanvasElement, DRILL.head.x - 13, DRILL.head.y - 18);
-    ci.drawImage(scene.textures.get('miner-chuck-light').getSourceImage() as HTMLCanvasElement, DRILL.head.x - 13, DRILL.head.y - 18);
+    k.drawImage(spoil, 0, 0);
+    ci.drawImage(img('miner-body'), 0, 0);
+    ci.drawImage(tinted, DRILL.bore.x - 56, DRILL.bore.y - 20);
+    ci.drawImage(img('miner-auger-0'), DRILL.bore.x - AUGER.ax, DRILL.augerTop);
+    ci.drawImage(img('miner-lip'), DRILL.bore.x - 40, DRILL.bore.y - 20);
+    const ch = img('miner-chuck');
+    ci.drawImage(ch, DRILL.drive.x - ch.width / 2, DRILL.drive.y - ch.height / 2);
+    ci.drawImage(img('miner-chuck-light'), DRILL.drive.x - ch.width / 2, DRILL.drive.y - ch.height / 2);
   }
   ti.refresh();
 
@@ -2080,7 +2054,8 @@ function makeGrabber(scene: Phaser.Scene) {
       rivets(ctx, [[x, y]], 2);
     }
     // Bolted collar: a thick steel flange around the housing, ringed with hex bolts.
-    drum(ctx, 32, HUB_Y, 27.5, 5, 0x7d8894, { k: 2.5, lw: 3.2, shadow: 4 });
+    // Kept dark and matte: the hub is a quiet mount, the moving arm and the machines carry the eye.
+    drum(ctx, 32, HUB_Y, 27.5, 5, 0x565d67, { k: 2.5, lw: 3.2, shadow: 4 });
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * Math.PI * 2 + Math.PI / 12;
       const bx = 32 + Math.cos(a) * 25.4;
@@ -2092,7 +2067,7 @@ function makeGrabber(scene: Phaser.Scene) {
         ctx.lineTo(bx + 0.5 + Math.cos(t) * 2.2, by + 0.6 + Math.sin(t) * 2.2);
       }
       ctx.fill();
-      ctx.fillStyle = css(0xb9c3cc, 0.25);
+      ctx.fillStyle = css(0x8d99a4, -0.1);
       ctx.beginPath();
       ctx.arc(bx, by, 1.3, 0, Math.PI * 2);
       ctx.fill();
@@ -2122,7 +2097,7 @@ function makeGrabber(scene: Phaser.Scene) {
     c.beginPath();
     c.arc(18, 18, R + 1.3, 0, Math.PI * 2);
     c.fill();
-    c.fillStyle = css(0x9aa6b1);
+    c.fillStyle = css(0x646c76);
     c.beginPath();
     c.arc(18, 18, R, 0, Math.PI * 2);
     c.fill();
@@ -2130,10 +2105,12 @@ function makeGrabber(scene: Phaser.Scene) {
     c.save();
     c.beginPath();
     c.moveTo(18, 18);
-    c.arc(18, 18, R, Math.PI * 0.3, Math.PI * 0.7);
+    c.arc(18, 18, R, Math.PI * 0.36, Math.PI * 0.64);
     c.closePath();
     c.clip();
     stripes(c, 0, 0, 36, 36, 5);
+    c.fillStyle = 'rgba(28,20,17,0.35)';
+    c.fillRect(0, 0, 36, 36);
     c.restore();
     c.strokeStyle = INK;
     c.lineWidth = 1.2;
@@ -2153,7 +2130,7 @@ function makeGrabber(scene: Phaser.Scene) {
     discLight(c2, 18, 18, R);
     t2.refresh();
   }
-  // Shoulder turret: a yellow cap the upper arm slides out from under, with a counterweight lip.
+  // Shoulder turret: a gunmetal cap the upper arm slides out from under, with a counterweight lip.
   {
     const [c, t] = canvas(scene, 'inserter-turret', 32, 32);
     const r = 12.5;
@@ -2161,17 +2138,17 @@ function makeGrabber(scene: Phaser.Scene) {
     c.beginPath();
     c.arc(16, 16, r + 1.5, 0, Math.PI * 2);
     c.fill();
-    c.fillStyle = css(PALETTE.hazard, -0.08);
+    c.fillStyle = css(0x50565f);
     c.beginPath();
     c.arc(16, 16, r, 0, Math.PI * 2);
     c.fill();
     // Raised top face inside a bevelled rim.
-    c.fillStyle = css(PALETTE.hazard, 0.12);
+    c.fillStyle = css(0x5f6670);
     c.beginPath();
     c.arc(16, 16, r - 2.6, 0, Math.PI * 2);
     c.fill();
     // Counterweight: a dark lip at the back with two bolts.
-    c.fillStyle = css(PALETTE.hazard, -0.45);
+    c.fillStyle = css(PALETTE.hazard, -0.35);
     c.beginPath();
     c.arc(16, 16, r, Math.PI * 0.3, Math.PI * 0.7);
     c.arc(16, 16, r - 2.6, Math.PI * 0.7, Math.PI * 0.3, true);
@@ -2237,7 +2214,7 @@ function makeGrabber(scene: Phaser.Scene) {
   // Bolt caps for the shoulder (red rim) and the elbow / wrist (steel).
   {
     const [c, t] = canvas(scene, 'inserter-pivot-big', 20, 20);
-    pivotCap(c, 10, 10, 6, 0xc4361e);
+    pivotCap(c, 10, 10, 6, 0x7a4030);
     t.refresh();
     const [c2, t2] = canvas(scene, 'inserter-pivot', 16, 16);
     pivotCap(c2, 8, 8, 5.4, 0xb9c3cc);
@@ -2634,37 +2611,43 @@ function drillView(h: MachineHost, e: Entity): View {
   const oy = cy - TILE;
   const boreX = ox + DRILL.bore.x;
   const boreY = oy + DRILL.bore.y;
-  const headX = ox + DRILL.head.x;
-  const headY = oy + DRILL.head.y;
-  // Spoil and rock chips take the colour of the ore under the drill.
+  const driveX = ox + DRILL.drive.x;
+  const driveY = oy + DRILL.drive.y;
+  // Cuttings take the colour of the ore under the drill.
   let oreTint = 0xb5532e;
   for (let j = 0; j < e.size; j++)
     for (let i = 0; i < e.size; i++) {
       const o = world.ore[world.idx(e.x + i, e.y + j)];
       if (o) oreTint = ITEM_LOOK[o.type];
     }
-  const spoil = shade(oreTint, 0.22);
-  const bore = scene.add.image(boreX, boreY, 'miner-bore').setOrigin(0.5, 27 / 60).setDepth(3.97).setTint(spoil);
+  const spoilTint = shade(oreTint, 0.22);
+  const dustTint = shade(oreTint, 0.4);
+  const padTint = shade(oreTint, -0.25);
+  const pad = scene.add.image(cx, cy + 6, 'miner-pad').setOrigin(68 / 136, 62 / 120).setDepth(3.9).setTint(padTint);
   const shadow = contactShadow(scene, 'miner-body', cx, cy);
   const body = scene.add.image(cx, cy, 'miner-body').setDepth(4);
-  const auger = scene.add.image(headX, oy + DRILL.augerTop, 'miner-auger-0').setOrigin(0.5, 0).setDepth(4.1);
-  const lip = scene.add.image(boreX, boreY, 'miner-lip').setOrigin(0.5, 27 / 60).setDepth(4.12).setTint(spoil);
-  const head = scene.add.image(headX, headY, 'miner-head').setDepth(4.14);
-  const chuck = scene.add.image(headX, headY - 5, 'miner-chuck').setDepth(4.15);
-  const chuckLight = scene.add.image(headX, headY - 5, 'miner-chuck-light').setDepth(4.16);
-  const blur = scene.add.image(headX, headY - 5, 'miner-blur').setDepth(4.17).setAlpha(0);
+  const spoil = scene.add.image(boreX, boreY, 'miner-spoil').setOrigin(0.5, 0.5).setDepth(4.02).setTint(spoilTint);
+  const auger = scene.add.image(boreX, oy + DRILL.augerTop, 'miner-auger-0').setOrigin(AUGER.ax / AUGER.w, 0).setDepth(4.1);
+  const lip = scene.add.image(boreX, boreY, 'miner-lip').setOrigin(0.5, 20 / 44).setDepth(4.12);
+  // Warm glow in the throat while it cuts: friction heat at the bit.
+  const heat = scene.add.image(boreX, boreY + 1, 'glow').setDepth(4.11).setScale(0.75, 0.32).setTint(0xff8a30).setBlendMode(Phaser.BlendModes.ADD).setAlpha(0);
+  const chuck = scene.add.image(driveX, driveY, 'miner-chuck').setDepth(4.15);
+  const chuckLight = scene.add.image(driveX, driveY, 'miner-chuck-light').setDepth(4.16);
+  const blur = scene.add.image(driveX, driveY, 'miner-blur').setDepth(4.17).setAlpha(0).setScale(1.05);
   const chute = scene.add.image(0, 0, 'chute').setDepth(4.05);
-  const lamp = makeLamp(scene, ox + 72, oy + 16, 4.3, 0.8);
+  const lamp = makeLamp(scene, ox + 28, oy + 47, 4.3, 0.85);
   const dt = clock();
   let spin = 0;
   let ang = 0;
   let prog = 0;
+  let nextDust = 0;
   let nextChip = 0;
   let nextPuff = 0;
+  let side = 1;
   let kick = 0;
   let plunge = 0;
   return {
-    parts: [bore, shadow, body, auger, lip, head, chuck, chuckLight, blur, chute, ...lampParts(lamp)],
+    parts: [pad, shadow, body, spoil, auger, heat, lip, chuck, chuckLight, blur, chute, ...lampParts(lamp)],
     update: (m, time) => {
       if (m.kind !== 'miner') return;
       const d = dt(time);
@@ -2674,45 +2657,54 @@ function drillView(h: MachineHost, e: Entity): View {
       const frame = ((Math.floor(turn * DRILL.frames) % DRILL.frames) + DRILL.frames) % DRILL.frames;
       auger.setTexture(`miner-auger-${frame}`);
       chuck.setRotation(ang);
-      blur.setRotation(ang * 1.3).setAlpha(spin * 0.6);
+      blur.setRotation(ang * 1.3).setAlpha(spin * 0.7);
       const cut = m.progress < prog - 0.5;
       if (cut) kick = 1;
       prog = m.progress;
       kick = approach(kick, 0, 9, d);
-      // The top drive feeds down as each load is cut, then pulls back a touch when it is done.
-      plunge = approach(plunge, m.active ? 1.5 + m.progress * 3 - kick * 2.5 : 0, 6, d);
+      // The auger feeds down as each load is cut, then pulls back a touch when it is done.
+      plunge = approach(plunge, m.active ? 1 + m.progress * 3 - kick * 3 : 0, 6, d);
       const shake = m.active ? Math.sin(time * 0.11) * 0.6 : 0;
-      body.setPosition(cx + shake * 0.4, cy + shake * 0.25);
-      auger.setPosition(headX + shake, oy + DRILL.augerTop + plunge);
-      head.setPosition(headX + shake * 0.7, headY + plunge);
-      chuck.setPosition(headX + shake * 0.7, headY - 5 + plunge);
-      chuckLight.setPosition(headX + shake * 0.7, headY - 5 + plunge);
-      blur.setPosition(headX + shake * 0.7, headY - 5 + plunge);
+      body.setPosition(cx + shake * 0.3, cy + shake * 0.2);
+      auger.setPosition(boreX + shake, oy + DRILL.augerTop + plunge);
+      chuck.setPosition(driveX + shake * 0.3, driveY + shake * 0.2);
+      chuckLight.setPosition(driveX + shake * 0.3, driveY + shake * 0.2);
+      blur.setPosition(driveX + shake * 0.3, driveY + shake * 0.2);
+      heat.setAlpha(spin * (0.35 + 0.15 * Math.sin(time * 0.02)) + kick * 0.3);
       const [px, py, pa] = chutePos(h, m);
       chute.setPosition(px, py).setAngle(pa).setScale(1 + kick * 0.18, 1 + kick * 0.1);
       setLamp(lamp, m.active ? LAMP_GO : LAMP_WAIT, m.active ? 1 : 0.5 + 0.5 * Math.sin(time / 260));
+      if (m.active && time > nextDust) {
+        // Dust boiling out of the bore, alternating sides, rolling outward and up over the flange.
+        nextDust = time + 90 + Math.random() * 50;
+        side = -side;
+        const x = boreX + side * (22 + Math.random() * 8);
+        const y = boreY + 3 + Math.random() * 4;
+        fx.spawn('fx-dust', x, y, { vx: side * (40 + Math.random() * 40), vy: -18 - Math.random() * 22, drag: 2.2, life: 0.75 + Math.random() * 0.3, s0: 0.3, s1: 0.95, a0: 0.95, a1: 0, spin: side * 1.5, tint: dustTint, depth: 4.13 });
+      }
       if (m.active && time > nextChip) {
-        nextChip = time + 80 + Math.random() * 80;
-        // Cuttings thrown out of the bore and outward over the spoil ring, to the sides and front
-        // so they never hide the auger.
-        const a = -0.5 + Math.random() * (Math.PI + 1);
-        const x = boreX + Math.cos(a) * 24;
-        const y = boreY + Math.sin(a) * 10;
-        const out = 70 + Math.random() * 70;
-        fx.spawn('fx-chip', x, y - 2, { vx: Math.cos(a) * out, vy: Math.sin(a) * out * 0.5 - 70 - Math.random() * 40, g: 420, drag: 1.2, life: 0.6, s0: 0.7 + Math.random() * 0.6, s1: 0.55, a0: 1, a1: 0.7, tint: oreTint, spin: 9, depth: 4.2 });
-        if (Math.random() < 0.3) fx.spawn('fx-dust', x, y, { vx: Math.cos(a) * 30, vy: Math.sin(a) * 14 - 14, drag: 1.5, life: 0.9, s0: 0.25, s1: 0.8, a0: 0.8, a1: 0, spin: 1, tint: shade(oreTint, 0.35), depth: 4.25 });
+        // Cuttings flung from the flights out to the sides, landing close to the bore.
+        nextChip = time + 110 + Math.random() * 90;
+        const s = Math.random() < 0.5 ? -1 : 1;
+        const x = boreX + s * (24 + Math.random() * 6);
+        fx.spawn('fx-chip', x, boreY, { vx: s * (70 + Math.random() * 60), vy: -60 - Math.random() * 40, g: 520, drag: 1, life: 0.4, s0: 0.75 + Math.random() * 0.5, s1: 0.6, a0: 1, a1: 0.8, tint: oreTint, spin: 9, depth: 4.2 });
       }
       if (cut) {
-        // A load cut free: a burst of cuttings and a dust ring at the bore.
-        fx.spawn('fx-dustring', boreX, boreY + 2, { life: 0.4, s0: 0.35, s1: 0.75, a0: 0.7, a1: 0, rot: 0, depth: 3.98, tint: shade(oreTint, 0.3) });
-        for (let i = 0; i < 6; i++) {
-          const a = Math.PI + (i / 5) * Math.PI + (Math.random() - 0.5) * 0.4;
-          fx.spawn('fx-chip', boreX + Math.cos(a) * 16, boreY + Math.sin(a) * 6, { vx: Math.cos(a) * 110, vy: -150 - Math.random() * 80, g: 460, drag: 1, life: 0.65, s0: 1.1, s1: 0.7, a0: 1, a1: 0.8, tint: oreTint, spin: 10, depth: 4.2 });
+        // A load cut free: a ring of dust off the flange and a burst of cuttings.
+        fx.spawn('fx-dustring', boreX, boreY + 3, { life: 0.45, s0: 0.45, s1: 0.95, a0: 0.85, a1: 0, rot: 0, depth: 4.125, tint: dustTint });
+        for (let i = 0; i < 4; i++) {
+          const s = i % 2 ? 1 : -1;
+          fx.spawn('fx-dust', boreX + s * (10 + i * 5), boreY + 2, { vx: s * (60 + i * 20), vy: -30 - i * 8, drag: 2.4, life: 0.8, s0: 0.4, s1: 1.15, a0: 0.95, a1: 0, spin: s * 2, tint: dustTint, depth: 4.13 });
+        }
+        for (let i = 0; i < 7; i++) {
+          const s = i % 2 ? 1 : -1;
+          const a = s > 0 ? -0.35 - Math.random() * 0.5 : Math.PI + 0.35 + Math.random() * 0.5;
+          fx.spawn('fx-chip', boreX + s * 24, boreY, { vx: Math.cos(a) * 150, vy: Math.sin(a) * 150 - 40, g: 520, drag: 1, life: 0.6, s0: 1.15, s1: 0.75, a0: 1, a1: 0.8, tint: oreTint, spin: 10, depth: 4.2 });
         }
       }
       if (m.active && time > nextPuff) {
         nextPuff = time + 650 + Math.random() * 300;
-        fx.smoke(ox + 50, oy + 8, 0.55, true);
+        fx.smoke(ox + 104, oy + 5, 0.55, true);
       }
     },
   };
