@@ -2,11 +2,10 @@
 // hatching in the shadows, grime. No external art: everything is painted on canvases at boot.
 
 import Phaser from 'phaser';
-import { ITEMS, type ItemId } from '../sim/defs';
+import type { ItemId } from '../sim/defs';
 import { hash2, mulberry32 } from '../sim/rng';
 
 export const TILE = 64;
-export const BELT_FRAMES = 16;
 
 export const INK = '#1c1411';
 export const PALETTE = {
@@ -199,151 +198,6 @@ export const ITEM_LOOK: Record<ItemId, number> = {
   circuit: 0x7bc043,
 };
 
-export function makeItems(scene: Phaser.Scene) {
-  const S = 28;
-  for (const id of Object.keys(ITEMS) as ItemId[]) {
-    const [ctx, tex] = canvas(scene, `item-${id}`, S, S);
-    const c = ITEM_LOOK[id];
-    const o = { k: 2.5, lw: 2.2, drop: 2.5 };
-    if (id === 'cuprite-ore' || id === 'silica') {
-      cel(ctx, poly([[6, 20], [11, 4], [15, 18]]), c, o);
-      cel(ctx, poly([[12, 22], [18, 6], [22, 21]]), c, o);
-    } else if (id.endsWith('-ore') || id === 'carbon') {
-      cel(ctx, poly(blob(14, 14, 9, id.length * 7, 7)), c, o);
-    } else if (id.endsWith('-bar')) {
-      cel(ctx, poly([[4, 18], [8, 9], [22, 9], [25, 18]]), c, o);
-    } else if (id === 'glass') {
-      cel(ctx, rrect(5, 6, 18, 15, 2), c, { ...o, hatch: false });
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(9, 16);
-      ctx.lineTo(14, 9);
-      ctx.stroke();
-    } else if (id === 'gear') {
-      const pts: [number, number][] = [];
-      for (let a = 0; a < 16; a++) {
-        const r = a % 2 ? 7.5 : 11;
-        const ang = (a / 16) * Math.PI * 2;
-        pts.push([14 + Math.cos(ang) * r, 14 + Math.sin(ang) * r]);
-      }
-      cel(ctx, poly(pts), c, o);
-      ctx.fillStyle = INK;
-      ctx.beginPath();
-      ctx.arc(14, 14, 3, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (id === 'wire') {
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.arc(14, 14, 8, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.strokeStyle = css(c);
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.strokeStyle = css(c, 0.5);
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(14, 14, 8, Math.PI, Math.PI * 1.6);
-      ctx.stroke();
-    } else if (id === 'circuit') {
-      cel(ctx, rrect(4, 5, 20, 18, 2), c, o);
-      ctx.fillStyle = INK;
-      ctx.fillRect(10, 10, 8, 8);
-      ctx.fillStyle = css(PALETTE.hazard);
-      for (let i = 0; i < 3; i++) {
-        ctx.fillRect(7 + i * 6, 4, 2, 3);
-        ctx.fillRect(7 + i * 6, 21, 2, 3);
-      }
-    }
-    tex.refresh();
-  }
-}
-
-// ---------- belts ----------
-
-/** Belt frames drawn pointing north. Frame f shifts the treads by f/BELT_FRAMES of a tread period. */
-export function makeBelts(scene: Phaser.Scene) {
-  const P = 16;
-  for (const curve of [false, true]) {
-    for (let f = 0; f < BELT_FRAMES; f++) {
-      const [ctx, tex] = canvas(scene, `belt-${curve ? 'c' : 's'}-${f}`, TILE, TILE);
-      const shift = (f / BELT_FRAMES) * P;
-      if (!curve) {
-        ctx.fillStyle = '#2b2326';
-        ctx.fillRect(9, 0, TILE - 18, TILE);
-        for (let y = -P + (P - shift); y < TILE + P; y += P) {
-          ctx.fillStyle = '#3c3236';
-          ctx.fillRect(10, y, TILE - 20, 9);
-          ctx.strokeStyle = INK;
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(10, y);
-          ctx.lineTo(TILE - 10, y);
-          ctx.stroke();
-          ctx.strokeStyle = css(PALETTE.hazard);
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          ctx.moveTo(25, y + 11);
-          ctx.lineTo(32, y + 5);
-          ctx.lineTo(39, y + 11);
-          ctx.stroke();
-        }
-        for (const x of [2, TILE - 10]) {
-          ctx.fillStyle = css(PALETTE.steel);
-          ctx.fillRect(x, 0, 8, TILE);
-          ctx.fillStyle = css(PALETTE.steel, 0.35);
-          ctx.fillRect(x + 1, 0, 2, TILE);
-          ctx.strokeStyle = INK;
-          ctx.lineWidth = 2.5;
-          ctx.strokeRect(x, -2, 8, TILE + 4);
-          for (let y = 8; y < TILE; y += 24) bolt(ctx, x + 4, y);
-        }
-      } else {
-        // Curve from the west edge to the north edge, pivot at the north-west corner.
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, 0, TILE, TILE);
-        ctx.clip();
-        ctx.fillStyle = '#2b2326';
-        ctx.beginPath();
-        ctx.arc(0, 0, TILE - 9, 0, Math.PI / 2);
-        ctx.arc(0, 0, 9, Math.PI / 2, 0, true);
-        ctx.fill();
-        for (let i = 0; i < 5; i++) {
-          const a = ((i + 1 - f / BELT_FRAMES) / 4) * (Math.PI / 2);
-          ctx.strokeStyle = '#3c3236';
-          ctx.lineWidth = 8;
-          ctx.beginPath();
-          ctx.moveTo(Math.cos(a) * 11, Math.sin(a) * 11);
-          ctx.lineTo(Math.cos(a) * (TILE - 11), Math.sin(a) * (TILE - 11));
-          ctx.stroke();
-          ctx.strokeStyle = css(PALETTE.hazard);
-          ctx.lineWidth = 3;
-          const am = a - 0.12;
-          ctx.beginPath();
-          ctx.moveTo(Math.cos(am) * 25, Math.sin(am) * 25);
-          ctx.lineTo(Math.cos(a - 0.22) * 32, Math.sin(a - 0.22) * 32);
-          ctx.lineTo(Math.cos(am) * 39, Math.sin(am) * 39);
-          ctx.stroke();
-        }
-        for (const r0 of [TILE - 6, 6]) {
-          ctx.strokeStyle = INK;
-          ctx.lineWidth = 11;
-          ctx.beginPath();
-          ctx.arc(0, 0, r0, 0, Math.PI / 2);
-          ctx.stroke();
-          ctx.strokeStyle = css(PALETTE.steel);
-          ctx.lineWidth = 6;
-          ctx.stroke();
-        }
-        ctx.restore();
-      }
-      tex.refresh();
-    }
-  }
-}
-
 // ---------- shared bits ----------
 
 /** Generic textures: placement arrow, a white pixel, a soft fire glow, a smoke puff. Machines live in machines.ts. */
@@ -372,7 +226,5 @@ export function makeBuildings(scene: Phaser.Scene) {
 }
 
 export function makeShared(scene: Phaser.Scene) {
-  makeItems(scene);
-  makeBelts(scene);
   makeBuildings(scene);
 }

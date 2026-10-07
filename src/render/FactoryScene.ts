@@ -5,7 +5,10 @@ import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/wor
 import { Hud } from './hud';
 import { Fx, launchPod, machineView, makeMachines, type View } from './machines';
 import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, makePod, makeSite } from './site';
-import { BELT_FRAMES, TILE, makeShared } from './textures';
+import { BELT_ATLAS, BELT_FRAMES, BELT_PERIOD, beltShapeKey, makeBelts } from './belts';
+import { ItemFlow } from './flow';
+import { makeItems } from './items';
+import { TILE, makeShared } from './textures';
 
 const STEP = 1 / 60;
 /** Room kept free around the plot for the HUD, in screen pixels. */
@@ -23,8 +26,7 @@ export class FactoryScene extends Phaser.Scene {
   private lastNow = 0;
   private views = new Map<number, View>();
   private siteLayer: Phaser.GameObjects.GameObject[] = [];
-  private itemPool: Phaser.GameObjects.Image[] = [];
-  private itemsUsed = 0;
+  private flow!: ItemFlow;
   private backdrop!: Phaser.GameObjects.Image;
   private ghost!: Phaser.GameObjects.Image;
   private ghostArrow!: Phaser.GameObjects.Image;
@@ -57,8 +59,11 @@ export class FactoryScene extends Phaser.Scene {
   create() {
     this.campaign = this.getCampaign();
     makeShared(this);
+    makeItems(this);
+    makeBelts(this);
     makeMachines(this);
     this.fx = new Fx(this);
+    this.flow = new ItemFlow(this, (b, pos, c) => this.beltItemPos(b, pos, c));
     makeBackdrop(this);
     makeCable(this);
     makePod(this);
@@ -267,8 +272,9 @@ export class FactoryScene extends Phaser.Scene {
     if (this.campaign.current !== this.shownSite) this.showSite(this.campaign.current);
     for (const ev of this.afterUpdate()) this.onCampaignEvent(ev);
     this.fx.update(this.game.loop.delta / 1000);
+    // Goods first: a grabber's view reads the hand-off the flow records this frame.
+    this.flow.update(this.world, this.game.loop.delta / 1000);
     this.syncEntities(time);
-    this.drawItems();
     this.drawCable(time);
     this.bubbleAcid(time);
     this.drawCursor();
@@ -349,21 +355,42 @@ export class FactoryScene extends Phaser.Scene {
     const cy = (e.y + e.size / 2) * TILE;
     switch (e.kind) {
       case 'belt': {
-        const img = this.add.image(cx, cy, 'belt-s-0').setDepth(2);
+        // Ground shadow, the tread, and end rollers wherever the run starts or stops.
+        const shadow = this.add.image(cx + 3, cy + 5, BELT_ATLAS, 'sh-s0').setDepth(1.9).setAlpha(0.34);
+        const img = this.add.image(cx, cy, BELT_ATLAS, 's0-0').setDepth(2);
+        const capBack = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.05);
+        const capFront = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.06);
+        const inlets = [1, 3].map(() => this.add.image(cx, cy, BELT_ATLAS, 'inlet-0').setDepth(2.07).setVisible(false));
         return {
-          parts: [img],
-          update: (b, time) => {
-            const f = Math.floor((time / 1000) * BELT_FRAMES * ((BELT_SPEED * TILE) / 16)) % BELT_FRAMES;
-            const c = this.world.isCurve(b as Belt);
-            if (c.curve) {
-              const fromLeft = c.from === (b.dir + 3) % 4;
-              img.setTexture(`belt-c-${f}`).setFlipX(!fromLeft).setAngle(b.dir * 90);
-            } else img.setTexture(`belt-s-${f}`).setFlipX(false).setAngle(b.dir * 90);
+          parts: [shadow, img, capBack, capFront, ...inlets],
+          update: (e, time) => {
+            const b = e as Belt;
+            const w = this.world;
+            const f = Math.floor(((time / 1000) * BELT_SPEED * TILE * BELT_FRAMES) / BELT_PERIOD) % BELT_FRAMES;
+            const c = w.isCurve(b);
+            const key = beltShapeKey(b.dir, c.curve, c.from);
+            img.setFrame(`${key}-${f}`);
+            if (shadow.frame.name !== `sh-${key}`) shadow.setFrame(`sh-${key}`);
+            const next = w.entityAt(b.x + DX[b.dir], b.y + DY[b.dir]);
+            const open = !(next?.kind === 'belt' && next.dir !== (b.dir + 2) % 4);
+            capFront.setVisible(open);
+            if (open) capFront.setFrame(`cap-${b.dir}`);
+            const back = ((b.dir + 2) % 4) as Dir;
+            const tail = !c.curve && !w.beltFeedsInto(w.entityAt(b.x + DX[back], b.y + DY[back]), b);
+            capBack.setVisible(tail);
+            if (tail) capBack.setFrame(`cap-${back}`);
+            // Feeders joining from the sides of a straight run get a merge plate across the rail.
+            [1, 3].forEach((turn, i) => {
+              const side = ((b.dir + turn) % 4) as Dir;
+              const feeds = !c.curve && w.beltFeedsInto(w.entityAt(b.x + DX[side], b.y + DY[side]), b);
+              inlets[i].setVisible(feeds);
+              if (feeds) inlets[i].setFrame(`inlet-${side}`);
+            });
           },
         };
       }
       default:
-        return machineView({ scene: this, world: this.world, fx: this.fx }, e)!;
+        return machineView({ scene: this, world: this.world, fx: this.fx, handoff: this.flow.handoff }, e)!;
     }
   }
 
@@ -390,30 +417,6 @@ export class FactoryScene extends Phaser.Scene {
     return [(b.x + 0.5 + r[0]) * TILE, (b.y + 0.5 + r[1]) * TILE];
   }
 
-  private drawItems() {
-    this.itemsUsed = 0;
-    for (const e of this.world.entities.values()) {
-      if (e.kind !== 'belt' || !e.items.length) continue;
-      const c = this.world.isCurve(e);
-      for (const it of e.items) {
-        const [x, y] = this.beltItemPos(e, Math.min(it.pos, 1), c);
-        this.itemImage(it.item).setPosition(x, y);
-      }
-    }
-    for (let i = this.itemsUsed; i < this.itemPool.length; i++) this.itemPool[i].setVisible(false);
-  }
-
-  private itemImage(item: ItemId): Phaser.GameObjects.Image {
-    let img = this.itemPool[this.itemsUsed];
-    if (!img) {
-      img = this.add.image(0, 0, `item-${item}`).setDepth(3);
-      this.itemPool.push(img);
-    }
-    this.itemsUsed++;
-    if (img.texture.key !== `item-${item}`) img.setTexture(`item-${item}`);
-    return img.setVisible(true);
-  }
-
   private drawCursor() {
     const t = this.hover;
     const w = this.world;
@@ -433,7 +436,7 @@ export class FactoryScene extends Phaser.Scene {
       const size = BUILDINGS[kind].size;
       const cx = (o.x + size / 2) * TILE;
       const cy = (o.y + size / 2) * TILE;
-      const key = kind === 'belt' ? 'belt-s-0' : kind === 'inserter' ? 'inserter-icon' : kind;
+      const key = kind === 'belt' ? 'belt-icon' : kind === 'inserter' ? 'inserter-icon' : kind;
       const ok = w.canPlace(kind, o.x, o.y) || (kind === 'belt' && w.entityAt(t.x, t.y)?.kind === 'belt');
       this.ghost.setVisible(true).setTexture(key).setPosition(cx, cy).setAngle(kind === 'belt' ? this.toolDir * 90 : 0);
       this.ghost.setTint(ok ? 0x9cff9c : 0xff6a5a);

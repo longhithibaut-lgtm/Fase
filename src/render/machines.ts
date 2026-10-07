@@ -8,6 +8,7 @@ import Phaser from 'phaser';
 import { CHEST_CAPACITY, type ItemId } from '../sim/defs';
 import { DX, DY, type Entity, type World } from '../sim/world';
 import { mulberry32 } from '../sim/rng';
+import { ITEM_BELT, ITEM_UNIT } from './items';
 import { INK, ITEM_LOOK, PALETTE, TILE, blob, canvas, cel, circle, css, grime, poly, rrect, type Ctx } from './textures';
 
 type Img = Phaser.GameObjects.Image;
@@ -2542,6 +2543,14 @@ export interface MachineHost {
   scene: Phaser.Scene;
   world: World;
   fx: Fx;
+  /** Where a grabber's freshly taken item was last drawn (by grabber id), so the claw can pull it in. */
+  handoff?: Map<number, { x: number; y: number }>;
+}
+
+/** Where a grabber's claw holds goods at rest over its pick-up (`side` -1) or drop (`side` 1) tile. */
+export function grabberGrip(e: Entity, side: 1 | -1): [number, number] {
+  const r = (38 + GRIP) * side;
+  return [(e.x + 0.5) * TILE + DX[e.dir] * r, (e.y + 0.5) * TILE - 32 + HUB_Y + DY[e.dir] * r];
 }
 
 export function machineView(h: MachineHost, e: Entity): View | null {
@@ -2787,7 +2796,7 @@ function fabricatorView(h: MachineHost, e: Entity): View {
   const tray = scene.add.image(0, 0, 'px').setDepth(4.07).setVisible(false);
   const part = scene.add.image(0, 0, 'px').setDepth(9.4).setVisible(false);
   const screen = scene.add.image(ox + 165, oy + 24, 'glow').setDepth(4.06).setTint(0x5dffb0).setBlendMode(ADD).setScale(0.5, 0.36).setAlpha(0.35);
-  const icon = scene.add.image(ox + 165, oy + 24, 'px').setDepth(4.07).setScale(0.42);
+  const icon = scene.add.image(ox + 165, oy + 24, 'px').setDepth(4.07).setScale(0.42 * ITEM_UNIT);
   const lamp = makeLamp(scene, ox + 22, oy + 24, 4.3, 0.8);
   const dt = clock();
   let ramY: number = FAB.rest;
@@ -2896,7 +2905,7 @@ function fabricatorView(h: MachineHost, e: Entity): View {
         const arc = 22 + Math.abs(tx - x0) * 0.12;
         const px = x0 + (tx - x0) * u;
         const py = y0 + (ty - y0) * u - Math.sin(u * Math.PI) * arc;
-        part.setVisible(true).setPosition(px, py).setRotation(u * 9).setScale(1 + 0.45 * Math.sin(u * Math.PI));
+        part.setVisible(true).setPosition(px, py).setRotation(u * 9).setScale(ITEM_BELT * (1 + 0.45 * Math.sin(u * Math.PI)));
         if (Math.random() < 0.6) fx.spawn('fx-ember', px, py, { vx: (Math.random() - 0.5) * 30, vy: -10, drag: 2, life: 0.35, s0: 0.9, s1: 0.2, a0: 1, a1: 0, add: true, depth: 9.35 });
       } else if (part.visible) {
         part.setVisible(false);
@@ -2909,7 +2918,7 @@ function fabricatorView(h: MachineHost, e: Entity): View {
       if (tray.visible) {
         if (tray.texture.key !== outKey) tray.setTexture(outKey);
         const b = land < 0.35 ? Math.abs(Math.sin(land * 18)) * Math.exp(-land * 10) * 6 : 0;
-        tray.setPosition(tx, ty - b).setScale(1 + (land < 0.15 ? (0.15 - land) * 1.2 : 0), 1 - (land < 0.15 ? (0.15 - land) * 1.2 : 0));
+        tray.setPosition(tx, ty - b).setScale(ITEM_BELT * (1 + (land < 0.15 ? (0.15 - land) * 1.2 : 0)), ITEM_BELT * (1 - (land < 0.15 ? (0.15 - land) * 1.2 : 0)));
       }
       spin = approach(spin, a.crafting ? 1 : 0.06, 2.5, d);
       wheelA += spin * d * 10;
@@ -2936,7 +2945,7 @@ function crateView(h: MachineHost, e: Entity): View {
   const cy = (e.y + 0.5) * TILE;
   const shadow = contactShadow(scene, 'chest', cx, cy);
   const body = scene.add.image(cx, cy, 'chest').setDepth(4);
-  const icon = scene.add.image(cx, cy - 7, 'px').setDepth(4.05).setScale(0.72).setVisible(false);
+  const icon = scene.add.image(cx, cy - 7, 'px').setDepth(4.05).setScale(0.72 * ITEM_UNIT).setVisible(false);
   const fill = scene.add.image(cx - 32 + 18, cy - 32 + 47.5, 'px').setOrigin(0, 0).setDepth(4.05).setTint(0x7dff6a);
   const dt = clock();
   let count = 0;
@@ -2960,7 +2969,7 @@ function crateView(h: MachineHost, e: Entity): View {
       count = n;
       bounce = approach(bounce, 0, 12, d);
       body.setScale(1 + bounce * 0.05, 1 - bounce * 0.05);
-      icon.setVisible(!!top).setScale(0.72 + bounce * 0.15);
+      icon.setVisible(!!top).setScale((0.72 + bounce * 0.15) * ITEM_UNIT);
       if (top && icon.texture.key !== `item-${top}`) icon.setTexture(`item-${top}`);
       const f = Math.min(1, n / CHEST_CAPACITY);
       fill.setDisplaySize(Math.max(0.01, 28 * f), 3).setVisible(n > 0).setTint(f > 0.9 ? 0xff6a3a : 0x7dff6a);
@@ -3125,6 +3134,8 @@ function grabberView(h: MachineHost, e: Entity): View {
   let open = 1;
   let squash = 0;
   let prevHeld: ItemId | null | undefined;
+  // A just-grabbed item travels from where it sat on the belt into the closing claw.
+  let pull: { x: number; y: number; t: number } | null = null;
   return {
     parts: [baseShadow, base, ring, ringLight, turret, turretLight, ...lampParts(lamp), shUpper, shFore, shClaw, heldShadow, upper, rod, cyl, fore, elbow, wrist, held, fingerL, fingerR, wristCap, shoulder],
     update: (ins, time) => {
@@ -3140,6 +3151,11 @@ function grabberView(h: MachineHost, e: Entity): View {
       // Grab / release: a short squash and a puff of dust where the claw meets the goods.
       const event = prevHeld !== undefined && prevHeld !== ins.held;
       if (event) squash = 1;
+      if (event && ins.held) {
+        const from = h.handoff?.get(ins.id);
+        h.handoff?.delete(ins.id);
+        pull = from ? { ...from, t: 0 } : null;
+      }
       prevHeld = ins.held;
       squash = approach(squash, 0, 11, d);
       const q = squash * Math.cos((1 - squash) * Math.PI * 1.5);
@@ -3213,10 +3229,19 @@ function grabberView(h: MachineHost, e: Entity): View {
       held.setVisible(!!ins.held);
       heldShadow.setVisible(!!ins.held);
       if (ins.held) {
-        const hx = wx + fwx * GRIP * s;
-        const hy = wy + fwy * GRIP * s;
+        let hx = wx + fwx * GRIP * s;
+        let hy = wy + fwy * GRIP * s;
+        let hs = 0.86;
+        if (pull) {
+          pull.t = Math.min(1, pull.t + d / 0.16);
+          const k = 1 - (1 - pull.t) * (1 - pull.t);
+          hx = pull.x + (hx - pull.x) * k;
+          hy = pull.y + (hy - pull.y) * k - Math.sin(k * Math.PI) * 5;
+          hs = 1 + (hs - 1) * k + Math.sin(k * Math.PI) * 0.08;
+          if (pull.t >= 1) pull = null;
+        }
         if (held.texture.key !== `item-${ins.held}`) held.setTexture(`item-${ins.held}`);
-        held.setPosition(hx, hy).setScale(0.72 * s).setRotation(ra * 0.15);
+        held.setPosition(hx, hy).setScale(ITEM_BELT * hs * s).setRotation(ra * 0.15);
         heldShadow.setPosition(hx + o2 + 2, hy + o2 * 1.25 + 2).setAlpha(0.42 - lift * 0.15);
       }
       // Status light: green while moving goods, amber pulse while waiting for something to grab.
@@ -3231,7 +3256,7 @@ export function launchPod(scene: Phaser.Scene, fx: Fx, x: number, y: number, ite
   const pod = scene.add.container(x, y - 10).setDepth(9);
   const flame = scene.add.image(0, 30, 'pod-flame').setBlendMode(Phaser.BlendModes.ADD).setOrigin(0.5, 0);
   const body = scene.add.image(0, 0, 'pod');
-  const cargo = scene.add.image(0, 1, `item-${item}`).setScale(0.55);
+  const cargo = scene.add.image(0, 1, `item-${item}`).setScale(0.55 * ITEM_UNIT);
   pod.add([flame, body, cargo]);
   pod.setScale(0.55);
   const state = { t: 0 };
