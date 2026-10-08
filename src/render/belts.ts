@@ -24,9 +24,9 @@ const OUTER = 30.5;
 const LX = -0.6;
 const LY = -0.8;
 
-const RUBBER = '#3a3037';
-const SLAT = '#5f5059';
-const SLAT_LIT = '#93808a';
+const RUBBER = '#4b3f48';
+const SLAT = '#6d5d67';
+const SLAT_LIT = '#a3909a';
 
 interface Pt {
   x: number;

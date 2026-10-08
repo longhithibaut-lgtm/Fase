@@ -8,7 +8,7 @@ import Phaser from 'phaser';
 import { CHEST_CAPACITY, type ItemId } from '../sim/defs';
 import { DX, DY, type Entity, type World } from '../sim/world';
 import { mulberry32 } from '../sim/rng';
-import { ITEM_BELT, ITEM_UNIT } from './items';
+import { ITEM_BELT, ITEM_SHADOW, ITEM_SIZE, ITEM_UNIT, shadowAlpha } from './items';
 import { INK, ITEM_LOOK, PALETTE, TILE, blob, canvas, cel, circle, css, grime, poly, rrect, type Ctx } from './textures';
 
 type Img = Phaser.GameObjects.Image;
@@ -1857,7 +1857,26 @@ const FORE_L = 28; // elbow to wrist
 const HUB_Y = 28; // shoulder pivot height on the base texture
 const KNUCKLE = 8; // finger pivots either side of the wrist axis
 const KNUCKLE_FWD = 6;
-const GRIP = 16; // held item distance ahead of the wrist
+const GRIP = 22; // held item distance ahead of the wrist: clear of the housing, between the jaws
+const REACH = 32; // shoulder to wrist with the arm out over a pick-up or drop tile
+const CLAW_OPEN = 0.74; // finger swing (radians) with the jaws open
+const CLAW_SHUT = 0.04; // finger swing with the jaws shut on nothing
+const HELD = 0.94; // held goods' scale relative to riding a belt
+
+/**
+ * Finger swing that closes the hooked tips on the sides of a good `hw` pixels in half-width, so the
+ * jaws bite its edges instead of lying across it. The tip sits about (-4.5, -16.5) from the knuckle.
+ */
+function clampSwing(hw: number): number {
+  let lo = 0;
+  let hi = CLAW_OPEN;
+  for (let i = 0; i < 12; i++) {
+    const m = (lo + hi) / 2;
+    if (KNUCKLE - 4.5 * Math.cos(m) + 16.5 * Math.sin(m) < hw - 1.5) lo = m;
+    else hi = m;
+  }
+  return lo;
+}
 
 /** A tapered capsule from (cx, y0, r0) at the bottom to (cx, y1, r1) at the top. */
 function taper(cx: number, y0: number, r0: number, y1: number, r1: number): PathFn {
@@ -2549,7 +2568,7 @@ export interface MachineHost {
 
 /** Where a grabber's claw holds goods at rest over its pick-up (`side` -1) or drop (`side` 1) tile. */
 export function grabberGrip(e: Entity, side: 1 | -1): [number, number] {
-  const r = (38 + GRIP) * side;
+  const r = (REACH + GRIP) * side;
   return [(e.x + 0.5) * TILE + DX[e.dir] * r, (e.y + 0.5) * TILE - 32 + HUB_Y + DY[e.dir] * r];
 }
 
@@ -2931,7 +2950,7 @@ function fabricatorView(h: MachineHost, e: Entity): View {
       }
       screen.setAlpha(0.3 + Math.sin(time / 140) * 0.05 + (a.crafting ? 0.12 : 0));
       icon.setVisible(!!a.recipe);
-      if (a.recipe && icon.texture.key !== outKey) icon.setTexture(outKey);
+      if (a.recipe && icon.texture.key !== `icon-${a.recipe.output}`) icon.setTexture(`icon-${a.recipe.output}`);
       setLamp(lamp, a.crafting ? LAMP_GO : LAMP_WAIT, a.crafting ? 1 : 0.5 + 0.5 * Math.sin(time / 260));
       prevP = a.crafting ? p : 0;
       wasCrafting = a.crafting;
@@ -2970,7 +2989,7 @@ function crateView(h: MachineHost, e: Entity): View {
       bounce = approach(bounce, 0, 12, d);
       body.setScale(1 + bounce * 0.05, 1 - bounce * 0.05);
       icon.setVisible(!!top).setScale((0.72 + bounce * 0.15) * ITEM_UNIT);
-      if (top && icon.texture.key !== `item-${top}`) icon.setTexture(`item-${top}`);
+      if (top && icon.texture.key !== `icon-${top}`) icon.setTexture(`icon-${top}`);
       const f = Math.min(1, n / CHEST_CAPACITY);
       fill.setDisplaySize(Math.max(0.01, 28 * f), 3).setVisible(n > 0).setTint(f > 0.9 ? 0xff6a3a : 0x7dff6a);
     },
@@ -3119,7 +3138,7 @@ function grabberView(h: MachineHost, e: Entity): View {
   const shUpper = scene.add.image(sx, sy, 'inserter-sh-upper').setOrigin(0.5, (UPPER_L + 15) / (UPPER_L + 30)).setDepth(D + 0.025).setAlpha(0.34);
   const shFore = scene.add.image(sx, sy, 'inserter-sh-fore').setOrigin(0.5, (FORE_L + 15) / (FORE_L + 30)).setDepth(D + 0.025).setAlpha(0.34);
   const shClaw = scene.add.image(sx, sy, 'inserter-sh-claw').setOrigin(0.5, 22 / 40).setDepth(D + 0.025).setAlpha(0.34);
-  const heldShadow = scene.add.image(cx, cy, 'glow').setDepth(D + 0.025).setTint(0x000000).setScale(0.3).setVisible(false);
+  const heldShadow = scene.add.image(cx, cy, ITEM_SHADOW).setDepth(D + 0.026).setVisible(false);
   const rod = scene.add.image(sx, sy, 'inserter-rod').setOrigin(0.5, 20.5 / 24).setDepth(6.045);
   const cyl = scene.add.image(sx, sy, 'inserter-cyl').setOrigin(0.5, 20.5 / 24).setDepth(6.046);
   const fore = scene.add.image(sx, sy, 'inserter-fore').setOrigin(0.5, (FORE_L + 11) / (FORE_L + 22)).setDepth(6.04);
@@ -3161,7 +3180,7 @@ function grabberView(h: MachineHost, e: Entity): View {
       const q = squash * Math.cos((1 - squash) * Math.PI * 1.5);
       open = approach(open, ins.held ? 0 : 1, 22, d);
       // Two-bone IK with a fixed elbow side: full reach at both ends, tucked in mid-swing.
-      const reach = 38 - lift * 10 - squash * 2;
+      const reach = REACH - lift * 8 - squash * 2;
       // Law of cosines: shoulder angle between the reach line and the upper arm.
       const bend = Math.acos(Phaser.Math.Clamp((UPPER_L * UPPER_L + reach * reach - FORE_L * FORE_L) / (2 * UPPER_L * reach), -1, 1));
       const a1 = a - bend;
@@ -3202,7 +3221,9 @@ function grabberView(h: MachineHost, e: Entity): View {
       const fwy = Math.sin(a);
       const rx = Math.cos(ra);
       const ry = Math.sin(ra);
-      const spread = 0.04 + open * 0.34;
+      const z = ins.held ? ITEM_SIZE[ins.held] : null;
+      const shut = z ? clampSwing(((z.w + z.h) / 4) * HELD) : CLAW_SHUT;
+      const spread = shut + open * (CLAW_OPEN - shut);
       for (const [f, side] of [
         [fingerL, -1],
         [fingerR, 1],
@@ -3231,7 +3252,7 @@ function grabberView(h: MachineHost, e: Entity): View {
       if (ins.held) {
         let hx = wx + fwx * GRIP * s;
         let hy = wy + fwy * GRIP * s;
-        let hs = 0.86;
+        let hs = HELD;
         if (pull) {
           pull.t = Math.min(1, pull.t + d / 0.16);
           const k = 1 - (1 - pull.t) * (1 - pull.t);
@@ -3242,7 +3263,8 @@ function grabberView(h: MachineHost, e: Entity): View {
         }
         if (held.texture.key !== `item-${ins.held}`) held.setTexture(`item-${ins.held}`);
         held.setPosition(hx, hy).setScale(ITEM_BELT * hs * s).setRotation(ra * 0.15);
-        heldShadow.setPosition(hx + o2 + 2, hy + o2 * 1.25 + 2).setAlpha(0.42 - lift * 0.15);
+        const sw = (z!.w * 0.55 + z!.h * 0.45) * HELD * (1 - lift * 0.2);
+        heldShadow.setPosition(hx + o2 + 1.5, hy + z!.h * 0.3 + o2 * 1.25).setDisplaySize(sw, sw * 0.4).setAlpha(shadowAlpha(ins.held) * (0.85 - lift * 0.35));
       }
       // Status light: green while moving goods, amber pulse while waiting for something to grab.
       const busy = ins.held !== null || ins.t > 0;
@@ -3256,7 +3278,7 @@ export function launchPod(scene: Phaser.Scene, fx: Fx, x: number, y: number, ite
   const pod = scene.add.container(x, y - 10).setDepth(9);
   const flame = scene.add.image(0, 30, 'pod-flame').setBlendMode(Phaser.BlendModes.ADD).setOrigin(0.5, 0);
   const body = scene.add.image(0, 0, 'pod');
-  const cargo = scene.add.image(0, 1, `item-${item}`).setScale(0.55 * ITEM_UNIT);
+  const cargo = scene.add.image(0, 1, `icon-${item}`).setScale(0.55 * ITEM_UNIT);
   pod.add([flame, body, cargo]);
   pod.setScale(0.55);
   const state = { t: 0 };

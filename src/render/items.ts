@@ -1,7 +1,8 @@
 // Goods: each one gets its own silhouette, colour and material so it reads at a glance on a dark
-// belt, in a claw or on a screen. Painted at twice the display resolution with three flat tones
-// per face (lit / mid / shadow + hatching) and a thick ink contour, then cut out with a cream rim
-// and a contact shadow so no item ever sinks into the belt under it.
+// belt, in a claw or on a screen. Painted at high resolution with three flat tones per face
+// (lit / mid / shadow + hatching), a thick ink contour and a glint, then fitted to one common
+// size. On belts and in claws they are solid objects with a soft contact shadow under them
+// (`item-*`); UI and machine screens use a cut-out sticker variant with a cream rim (`icon-*`).
 
 import Phaser from 'phaser';
 import { ITEMS, type ItemId } from '../sim/defs';
@@ -12,8 +13,11 @@ import { INK, ITEM_LOOK, PALETTE, canvas, css, type Ctx } from './textures';
  * crisp instead of shimmering when the whole site is zoomed out to fit a small screen.
  * Art is designed in a 36-unit box.
  */
-export const ITEM_TEX = 64;
-/** Display size of an item riding a belt, in world pixels (the bed between the rails is 40). */
+export const ITEM_TEX = 128;
+/**
+ * Display size of an item texture riding a belt, in world pixels (the bed between the rails is
+ * 40). The art inside is fitted to about 0.55 tile (ITEM_MAX / ITEM_MEAN below).
+ */
 export const ITEM_BELT_PX = 48;
 /** Scale that shows an item at its belt size. */
 export const ITEM_BELT = ITEM_BELT_PX / ITEM_TEX;
@@ -100,18 +104,23 @@ function lump(ctx: Ctx, base: number, outline: P, facets: [P, number][]) {
 }
 
 function ferriteOre(ctx: Ctx) {
-  const c = ITEM_LOOK['ferrite-ore'];
-  const A: [number, number] = [14, 16];
-  const B: [number, number] = [23, 14];
-  const C: [number, number] = [20, 23];
-  lump(ctx, c, [[5, 20], [8, 11], [16, 5], [26, 7], [31, 15], [29, 25], [19, 31], [9, 28]], [
-    [[[8, 11], [16, 5], [26, 7], B, A], 0.75],
-    [[[26, 7], [31, 15], [29, 25], [19, 31], C, B], -0.75],
-    [[[5, 20], [8, 11], A, C, [19, 31], [9, 28]], -0.05],
-    [[A, B, C], 0.3],
+  // A broken, blocky chunk (flat base, one jutting corner) so it reads as rock, not a token.
+  // A touch hotter than the ore patches so it holds against the purple belt rubber.
+  const c = 0xc4592c;
+  const A: [number, number] = [12, 15];
+  const B: [number, number] = [24, 13];
+  const C: [number, number] = [21, 23];
+  const E: [number, number] = [10, 24];
+  lump(ctx, c, [[3, 22], [6, 13], [12, 9], [15, 3], [24, 5], [29, 11], [33, 20], [28, 29], [15, 31], [6, 29]], [
+    [[[6, 13], [12, 9], [15, 3], [24, 5], B, A], 0.8],
+    [[[24, 5], [29, 11], [33, 20], C, B], -0.35],
+    [[[33, 20], [28, 29], [15, 31], C], -0.8],
+    [[A, B, C, E], 0.3],
+    [[[3, 22], [6, 13], A, E], 0.05],
+    [[[3, 22], E, C, [15, 31], [6, 29]], -0.5],
   ]);
   // Metallic flecks: what makes it iron.
-  for (const [x, y, r] of [[13, 10, 1.5], [20, 9, 1.1], [9, 21, 1.2], [16, 25, 1.4], [18, 17, 1]]) {
+  for (const [x, y, r] of [[13, 12, 1.5], [20, 8, 1.1], [8, 19, 1.2], [17, 26, 1.4], [17, 18, 1], [27, 15, 1.1]]) {
     ctx.fillStyle = '#e4e9ef';
     ctx.strokeStyle = INK;
     ctx.lineWidth = 0.6;
@@ -124,42 +133,49 @@ function ferriteOre(ctx: Ctx) {
     ctx.fill();
     ctx.stroke();
   }
-  glint(ctx, 13, 10, 2.6);
+  glint(ctx, 16, 7, 2.6);
 }
 
 function carbon(ctx: Ctx) {
-  // Smelter fuel: a black coke lump split by glowing ember seams, so it reads as "hot fuel" even
-  // as a speck on a dark belt.
-  const c = ITEM_LOOK.carbon;
-  const A: [number, number] = [12, 15];
-  const B: [number, number] = [20, 12];
-  const C: [number, number] = [25, 19];
-  const E: [number, number] = [16, 23];
-  lump(ctx, c, [[6, 17], [10, 9], [18, 6], [27, 9], [31, 18], [26, 28], [15, 30], [7, 25]], [
-    [[[10, 9], [18, 6], B, A], 0.9],
-    [[[18, 6], [27, 9], C, B], 0.55],
-    [[[27, 9], [31, 18], [26, 28], C], -0.7],
-    [[A, B, C, E], 0.2],
-    [[[6, 17], [10, 9], A, E, [15, 30], [7, 25]], -0.1],
-    [[E, C, [26, 28], [15, 30]], -0.6],
+  // Smelter fuel: two broken coke chunks split by glowing ember seams. Angular and paired so the
+  // silhouette never reads as a round token, with a cool sheen on the lit faces so the black
+  // still separates from belt rubber.
+  const c = 0x564e70;
+  // Small chunk first (behind), lower right.
+  lump(ctx, c, [[21, 24], [25, 19], [31, 20], [33, 26], [29, 31], [23, 30]], [
+    [[[21, 24], [25, 19], [31, 20], [27, 24]], 0.8],
+    [[[31, 20], [33, 26], [29, 31], [27, 24]], -0.75],
+    [[[21, 24], [27, 24], [29, 31], [23, 30]], -0.2],
+  ]);
+  const A: [number, number] = [11, 14];
+  const B: [number, number] = [19, 11];
+  const C: [number, number] = [22, 18];
+  const E: [number, number] = [13, 22];
+  lump(ctx, c, [[3, 18], [7, 9], [15, 4], [24, 6], [27, 14], [24, 24], [14, 28], [5, 25]], [
+    [[[7, 9], [15, 4], B, A], 0.95],
+    [[[15, 4], [24, 6], C, B], 0.6],
+    [[[24, 6], [27, 14], [24, 24], C], -0.75],
+    [[A, B, C, E], 0.25],
+    [[[3, 18], [7, 9], A, E, [14, 28], [5, 25]], -0.15],
+    [[E, C, [24, 24], [14, 28]], -0.6],
   ]);
   // Ember seams: ink crack, orange glow, white-hot core.
   const seams: P[] = [
-    [[8.5, 21], [12, 19.5], [14, 22.5], [17.5, 21], [19.5, 25], [23, 24.5]],
-    [[21, 12.5], [22.5, 16], [26.5, 16.5], [29, 20]],
-    [[13, 26], [16.5, 27.5]],
+    [[5.5, 19], [9, 17.5], [11, 20.5], [14.5, 19], [16.5, 23], [21, 22.5]],
+    [[19.5, 9], [20.5, 13], [24.5, 13.5], [26, 16]],
+    [[25, 25], [28.5, 26], [31, 24]],
   ];
-  for (const pts of seams) line(ctx, pts, 'rgba(255,90,20,0.35)', 4.2);
-  for (const pts of seams) line(ctx, pts, INK, 2.6);
-  for (const pts of seams) line(ctx, pts, '#ff7a1c', 1.5);
-  for (const pts of seams) line(ctx, pts, '#ffe27a', 0.6);
+  for (const pts of seams) line(ctx, pts, 'rgba(255,110,30,0.45)', 5.2);
+  for (const pts of seams) line(ctx, pts, INK, 3.2);
+  for (const pts of seams) line(ctx, pts, '#ff8a24', 2);
+  for (const pts of seams) line(ctx, pts, '#ffe680', 0.9);
   // Glassy sheen on the lit facets.
-  ctx.fillStyle = 'rgba(214,206,244,0.9)';
-  path(ctx, [[12, 10], [17, 8], [14, 12]]);
+  ctx.fillStyle = 'rgba(222,216,250,0.95)';
+  path(ctx, [[9, 9.5], [15, 6.5], [12, 11]]);
   ctx.fill();
-  path(ctx, [[20, 9], [25, 10], [21, 11]]);
+  path(ctx, [[17, 6.5], [22.5, 7.5], [18.5, 9]]);
   ctx.fill();
-  glint(ctx, 14, 9, 2.4);
+  glint(ctx, 12, 8, 2.4);
 }
 
 function crystal(ctx: Ctx, x: number, y: number, len: number, ang: number, w: number, base: number) {
@@ -281,16 +297,16 @@ function gear(ctx: Ctx) {
     const a = (i / N) * Math.PI * 2 - Math.PI / 2;
     const t = (Math.PI * 2) / N;
     for (const [da, r] of [
-      [-0.31, 11.4],
-      [-0.19, 15.6],
-      [0.19, 15.6],
-      [0.31, 11.4],
+      [-0.33, 12.2],
+      [-0.2, 16.4],
+      [0.2, 16.4],
+      [0.33, 12.2],
     ] as const)
       pts.push([18 + Math.cos(a + da * t) * r, 18 + Math.sin(a + da * t) * r]);
   }
   // Cel: shadow tone with hatching, then the lit body shifted toward the light.
-  fill(ctx, pts, css(c, -0.42));
-  hatch(ctx, pts, 0.55);
+  fill(ctx, pts, css(c, -0.34));
+  hatch(ctx, pts, 0.45);
   ctx.save();
   path(ctx, pts);
   ctx.clip();
@@ -303,37 +319,51 @@ function gear(ctx: Ctx) {
   path(ctx, pts, 0.7, 0.9);
   ctx.stroke();
   ctx.restore();
-  ink(ctx, pts, 2.6);
-  // Recessed web: a darker ring between rim and hub.
+  ink(ctx, pts, 2.2);
+  // Recessed web inside a raised rim: a slightly darker ring, lit on its lower-right inner edge.
   ctx.beginPath();
-  ctx.arc(18, 18, 8.2, 0, Math.PI * 2);
-  ctx.fillStyle = css(c, -0.3);
+  ctx.arc(18, 18, 9.6, 0, Math.PI * 2);
+  ctx.fillStyle = css(c, -0.16);
   ctx.fill();
   ctx.save();
   ctx.clip();
   ctx.beginPath();
-  ctx.arc(19.2, 19.6, 8.2, 0, Math.PI * 2);
-  ctx.fillStyle = css(c, -0.05);
+  ctx.arc(19, 19.3, 9.6, 0, Math.PI * 2);
+  ctx.fillStyle = css(c, 0.08);
   ctx.fill();
   ctx.restore();
-  ctx.strokeStyle = 'rgba(20,14,12,0.8)';
-  ctx.lineWidth = 1.3;
+  ctx.strokeStyle = 'rgba(20,14,12,0.85)';
+  ctx.lineWidth = 1.2;
   ctx.beginPath();
-  ctx.arc(18, 18, 8.2, 0, Math.PI * 2);
+  ctx.arc(18, 18, 9.6, 0, Math.PI * 2);
   ctx.stroke();
+  // Four lightening holes, punched clean through once the texture is built (PUNCH): the belt
+  // shows through them, which no badge would do.
+  for (const [x, y, r] of PUNCH.gear!) {
+    ctx.beginPath();
+    ctx.arc(x, y, r + 0.55, 0, Math.PI * 2);
+    ctx.fillStyle = INK;
+    ctx.fill();
+    // Bright lip on the lower-right edge, where the hole's far wall catches the light.
+    ctx.beginPath();
+    ctx.arc(x, y, r + 0.9, -Math.PI * 0.1, Math.PI * 0.6);
+    ctx.strokeStyle = css(c, 0.55);
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  }
   // Raised hub and the keyed axle bore.
   ctx.beginPath();
-  ctx.arc(18, 18, 5, 0, Math.PI * 2);
-  ctx.fillStyle = css(c, 0.4);
+  ctx.arc(18, 18, 3.6, 0, Math.PI * 2);
+  ctx.fillStyle = css(c, 0.45);
   ctx.fill();
   ctx.strokeStyle = INK;
-  ctx.lineWidth = 1.7;
+  ctx.lineWidth = 1.5;
   ctx.stroke();
   ctx.fillStyle = INK;
   ctx.beginPath();
-  ctx.arc(18, 18, 2.4, 0, Math.PI * 2);
+  ctx.arc(18, 18, 1.5, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillRect(17.2, 14.6, 1.6, 1.8);
+  ctx.fillRect(17.4, 15.6, 1.2, 1.4);
   glint(ctx, 11.5, 8.5, 2.4);
 }
 
@@ -467,6 +497,14 @@ function bar(c: number) {
   return (ctx: Ctx) => ingot(ctx, c);
 }
 
+/** Holes cut clean through a good after its contact lip is added, as [x, y, r] in art units. */
+const PUNCH: Partial<Record<ItemId, [number, number, number][]>> = {
+  gear: [0, 1, 2, 3].map((i) => {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    return [18 + Math.cos(a) * 6.4, 18 + Math.sin(a) * 6.4, 1.9] as [number, number, number];
+  }),
+};
+
 const ART: Record<ItemId, (ctx: Ctx) => void> = {
   'ferrite-ore': ferriteOre,
   'cuprite-ore': cupriteOre,
@@ -480,15 +518,31 @@ const ART: Record<ItemId, (ctx: Ctx) => void> = {
   circuit,
 };
 
-/** Light rim that lifts every item off the dark belt rubber, in art units. */
+/** Light rim of the sticker variant (HUD, machine screens), in art units. */
 const RIM = 1.7;
 const RIM_COLOR = '#fff1cc';
 /** Thin ink line around the rim so it also holds on pale ground and panels. */
 const RIM_INK = 0.8;
 
-/** The art's silhouette grown by `r` art units, filled with `color`. */
+/**
+ * Every good rides at one size: its art is measured and fitted so the longest side is at most
+ * ITEM_MAX and the mean of width and height is at most ITEM_MEAN (texture pixels). Round gears
+ * and flat ingots then read as the same weight of object on a belt.
+ */
+const ITEM_MAX = (50 / 64) * ITEM_TEX;
+const ITEM_MEAN = (46 / 64) * ITEM_TEX;
+/** Paint resolution: the art is drawn at twice the texture size and filtered down once. */
+const HI = ITEM_TEX * 2;
+
+/** Each good's drawn footprint at belt scale, in world pixels (for shadows and the claw). */
+export const ITEM_SIZE = {} as Record<ItemId, { w: number; h: number }>;
+/** Soft elliptical contact shadow laid on the belt under every good. */
+export const ITEM_SHADOW = 'item-shadow';
+/** Contact shadow strength per good: see-through glass casts a lighter one. */
+export const shadowAlpha = (id: ItemId) => (id === 'glass' ? 0.26 : 0.4);
+
+/** The art's silhouette grown by `r` texture pixels, filled with `color`. */
 function grown(art: HTMLCanvasElement, r: number, color: string): HTMLCanvasElement {
-  const k = ITEM_TEX / 36;
   const c = document.createElement('canvas');
   c.width = c.height = ITEM_TEX;
   const x = c.getContext('2d')!;
@@ -496,7 +550,7 @@ function grown(art: HTMLCanvasElement, r: number, color: string): HTMLCanvasElem
   for (const rr of [r * 0.5, r]) {
     for (let i = 0; i < steps; i++) {
       const a = (i / steps) * Math.PI * 2;
-      x.drawImage(art, Math.cos(a) * rr * k, Math.sin(a) * rr * k);
+      x.drawImage(art, Math.cos(a) * rr, Math.sin(a) * rr);
     }
   }
   x.globalCompositeOperation = 'source-in';
@@ -505,32 +559,122 @@ function grown(art: HTMLCanvasElement, r: number, color: string): HTMLCanvasElem
   return c;
 }
 
+/** Bounding box of the painted pixels. */
+function bounds(c: HTMLCanvasElement): [number, number, number, number] {
+  const d = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+  let x0 = c.width;
+  let y0 = c.height;
+  let x1 = 0;
+  let y1 = 0;
+  for (let y = 0; y < c.height; y++)
+    for (let x = 0; x < c.width; x++)
+      if (d[(y * c.width + x) * 4 + 3] > 24) {
+        x0 = Math.min(x0, x);
+        y0 = Math.min(y0, y);
+        x1 = Math.max(x1, x + 1);
+        y1 = Math.max(y1, y + 1);
+      }
+  return [x0, y0, x1 - x0, y1 - y0];
+}
+
+/** One good painted at full detail, fitted to the common size and centred in an item texture. */
+interface Fitted {
+  art: HTMLCanvasElement;
+  /** Art units to texture pixels. */
+  map: (x: number, y: number) => [number, number];
+  /** Texture pixels per art unit. */
+  unit: number;
+}
+
+function fitted(id: ItemId): Fitted {
+  const hi = document.createElement('canvas');
+  hi.width = hi.height = HI;
+  const h = hi.getContext('2d')!;
+  h.scale(HI / 36, HI / 36);
+  ART[id](h);
+  const [x0, y0, w, hh] = bounds(hi);
+  const k = Math.min(ITEM_MAX / Math.max(w, hh), ITEM_MEAN / ((w + hh) / 2));
+  const out = document.createElement('canvas');
+  out.width = out.height = ITEM_TEX;
+  const o = out.getContext('2d')!;
+  o.imageSmoothingQuality = 'high';
+  const dw = w * k;
+  const dh = hh * k;
+  o.drawImage(hi, x0, y0, w, hh, (ITEM_TEX - dw) / 2, (ITEM_TEX - dh) / 2, dw, dh);
+  ITEM_SIZE[id] = { w: dw * ITEM_BELT, h: dh * ITEM_BELT };
+  // Art units to texture pixels, for punching holes.
+  const u = (HI / 36) * k;
+  const ox = (ITEM_TEX - dw) / 2 - x0 * k;
+  const oy = (ITEM_TEX - dh) / 2 - y0 * k;
+  return { art: out, map: (x, y) => [ox + x * u, oy + y * u], unit: u };
+}
+
 export function makeItems(scene: Phaser.Scene) {
-  const k = ITEM_TEX / 36;
   for (const id of Object.keys(ITEMS) as ItemId[]) {
-    const art = document.createElement('canvas');
-    art.width = art.height = ITEM_TEX;
-    const a = art.getContext('2d')!;
-    a.scale(k, k);
-    ART[id](a);
-    const [ctx, tex] = canvas(scene, `item-${id}`, ITEM_TEX, ITEM_TEX);
-    // Contact shadow down-right, then ink and cream rings, then the art: a sticker-like cut-out
-    // that separates from belt rubber, orange ground and cream panels alike.
-    const outer = grown(art, RIM + RIM_INK, INK);
+    const { art, map, unit } = fitted(id);
+    const punch = (ctx: Ctx) => {
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      for (const [x, y, r] of PUNCH[id] ?? []) {
+        const [px, py] = map(x, y);
+        ctx.beginPath();
+        ctx.arc(px, py, r * unit, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    };
+    // The good itself, as a solid object: its own ink contour plus a heavier ink lip along the
+    // underside (a sliver of the silhouette dropped a touch), so it sits on the belt with weight.
+    // No backing: tread and arrows show right up to its edge; the soft contact shadow is its own
+    // sprite on the belt (ITEM_SHADOW), so it stays put while ore tumbles.
+    {
+      const [ctx, tex] = canvas(scene, `item-${id}`, ITEM_TEX, ITEM_TEX);
+      ctx.save();
+      const t = ITEM_TEX / 64;
+      ctx.globalAlpha = id === 'glass' ? 0.55 : 0.85;
+      ctx.drawImage(grown(art, 0.5 * t, INK), 0, 1.3 * t);
+      ctx.restore();
+      ctx.drawImage(art, 0, 0);
+      punch(ctx);
+      tex.refresh();
+      mipmap(scene, tex);
+    }
+    // Sticker variant for UI and machine screens: cream rim and ink ring, readable at icon size.
+    {
+      const [ctx, tex] = canvas(scene, `icon-${id}`, ITEM_TEX, ITEM_TEX);
+      const r = ITEM_TEX / 36;
+      const outer = grown(art, (RIM + RIM_INK) * r, INK);
+      ctx.save();
+      ctx.globalAlpha = id === 'glass' ? 0.3 : 0.45;
+      ctx.drawImage(outer, 1.2 * r, 2.2 * r);
+      ctx.restore();
+      ctx.drawImage(outer, 0, 0);
+      ctx.drawImage(grown(art, RIM * r, RIM_COLOR), 0, 0);
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.drawImage(art, 0, 0);
+      ctx.restore();
+      ctx.drawImage(art, 0, 0);
+      tex.refresh();
+      mipmap(scene, tex);
+    }
+  }
+  // Contact shadow: a soft ellipse, darkest right under the good, fading out at its rim.
+  {
+    const W = 64;
+    const Hh = 32;
+    const [ctx, tex] = canvas(scene, ITEM_SHADOW, W, Hh);
     ctx.save();
-    ctx.globalAlpha = id === 'glass' ? 0.3 : 0.45;
-    ctx.drawImage(outer, 1.2 * k, 2.2 * k);
+    ctx.scale(1, Hh / W);
+    const g = ctx.createRadialGradient(W / 2, W / 2, 0, W / 2, W / 2, W / 2);
+    g.addColorStop(0, 'rgba(14,6,4,1)');
+    g.addColorStop(0.45, 'rgba(14,6,4,0.85)');
+    g.addColorStop(0.75, 'rgba(14,6,4,0.35)');
+    g.addColorStop(1, 'rgba(14,6,4,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, W);
     ctx.restore();
-    ctx.drawImage(outer, 0, 0);
-    ctx.drawImage(grown(art, RIM, RIM_COLOR), 0, 0);
-    // See-through goods keep the belt visible through them: clear the rim under the art.
-    ctx.save();
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.drawImage(art, 0, 0);
-    ctx.restore();
-    ctx.drawImage(art, 0, 0);
     tex.refresh();
-    mipmap(scene, tex);
   }
 }
 

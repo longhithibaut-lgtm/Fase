@@ -136,7 +136,7 @@ export class Hud {
       const locked = !c.isUnlocked(l.id);
       b.className = [l.id === c.current ? 'on' : '', c.automated.has(l.id) ? 'done' : '', locked ? 'locked' : ''].join(' ');
       b.title = locked ? `${l.name} (locked)` : `${l.name}: ${ITEMS[l.product].name}`;
-      b.innerHTML = `<img src="${this.icon(`item-${l.product}`)}" alt="">`;
+      b.innerHTML = `<img src="${this.icon(`icon-${l.product}`)}" alt="">`;
       b.onclick = () => {
         if (!locked) this.scene.showSite(l.id);
       };
@@ -175,7 +175,7 @@ export class Hud {
   }
 
   private itemRow(item: ItemId, n: number | string): string {
-    return `<div class="row"><img src="${this.icon(`item-${item}`)}" alt="">${ITEMS[item].name}<span style="margin-left:auto">${n}</span></div>`;
+    return `<div class="row"><img src="${this.icon(`icon-${item}`)}" alt="">${ITEMS[item].name}<span style="margin-left:auto">${n}</span></div>`;
   }
 
   private renderSite() {
@@ -188,7 +188,7 @@ export class Hud {
     this.site.innerHTML = `
       <h1>${l.name}</h1>
       <div class="blurb">${l.blurb}</div>
-      <div class="goal"><img src="${this.icon(`item-${l.product}`)}" alt=""><b>${ITEMS[l.product].name}</b><span class="chip ${done ? 'done' : ''}" style="margin-left:auto">${done ? 'Automated' : 'Goal'}</span></div>
+      <div class="goal"><img src="${this.icon(`icon-${l.product}`)}" alt=""><b>${ITEMS[l.product].name}</b><span class="chip ${done ? 'done' : ''}" style="margin-left:auto">${done ? 'Automated' : 'Goal'}</span></div>
       <div class="meter ${rate >= l.target ? 'done' : ''}"><i style="width:${pct}%"></i></div>
       <div class="row"><span>${rate.toFixed(1)} / ${l.target} per min</span><span>cost ${w.cost()}</span></div>`;
   }
@@ -206,7 +206,7 @@ export class Hud {
       case 'assembler':
         body += '<div>';
         for (const r of ASSEMBLY)
-          body += `<button data-r="${r.id}" class="${e.recipe?.id === r.id ? 'on' : ''}"><img src="${this.icon(`item-${r.output}`)}" alt="">${ITEMS[r.output].name}</button>`;
+          body += `<button data-r="${r.id}" class="${e.recipe?.id === r.id ? 'on' : ''}"><img src="${this.icon(`icon-${r.output}`)}" alt="">${ITEMS[r.output].name}</button>`;
         body += '</div>';
         if (e.recipe) {
           for (const k of Object.keys(e.recipe.inputs) as ItemId[]) body += this.itemRow(k, e.inputs[k] ?? 0);

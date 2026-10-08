@@ -6,17 +6,22 @@
 import Phaser from 'phaser';
 import { BELT_SPEED, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type BeltItem, type Dir, type Inserter, type World } from '../sim/world';
-import { ITEM_BELT } from './items';
+import { ITEM_BELT, ITEM_SHADOW, ITEM_SIZE, shadowAlpha } from './items';
 import { grabberGrip } from './machines';
 import { TILE } from './textures';
 
 const DEPTH = 3;
+/** Contact shadows sit on the belt under every good, below all goods. */
+const SHADOW_DEPTH = 2.95;
 /** Rate at which a hop's leftover offset closes, per second (about 0.12s to settle). */
 const SETTLE = 22;
 /** Furthest a vanished item may be from a new one and still count as the same item moving on. */
 const MATCH = 52;
 const SINK_TIME = 0.14;
-const POP_TIME = 0.16;
+/** A good dropping out of a chute: a short fall onto the belt, then a squash as it lands. */
+const POP_TIME = 0.22;
+const POP_FALL = 0.55;
+const POP_HEIGHT = 12;
 /** Share of a tile kept clear in front of an end roller. */
 const END_INSET = 0.18;
 /**
@@ -32,8 +37,13 @@ const MIN_DRAWN = SHOW_GAP * TILE * 0.85;
 /** Belt travel in world pixels per second, plus slack: anything faster is a queue closing up. */
 const TRAVEL = BELT_SPEED * TILE * 1.6;
 
-interface Vis {
+/** A drawn good: the object and its contact shadow on the belt. */
+interface Sprite {
   img: Phaser.GameObjects.Image;
+  sh: Phaser.GameObjects.Image;
+}
+
+interface Vis extends Sprite {
   item: ItemId;
   /** Where it was drawn last frame. */
   x: number;
@@ -52,8 +62,8 @@ interface Vis {
   hidden: boolean;
 }
 
-interface Ghost {
-  img: Phaser.GameObjects.Image;
+interface Ghost extends Sprite {
+  item: ItemId;
   x: number;
   y: number;
   dx: number;
@@ -94,7 +104,7 @@ function jitter(item: ItemId): number {
 
 export class ItemFlow {
   private vis = new Map<BeltItem, Vis>();
-  private free: Phaser.GameObjects.Image[] = [];
+  private free: Sprite[] = [];
   private ghosts: Ghost[] = [];
   private held = new Map<number, ItemId | null>();
   private world: World | null = null;
@@ -107,20 +117,35 @@ export class ItemFlow {
     private beltItemPos: (b: Belt, pos: number, curve: { curve: boolean; from: Dir }) => [number, number],
   ) {}
 
-  private image(item: ItemId): Phaser.GameObjects.Image {
-    const img = this.free.pop() ?? this.scene.add.image(0, 0, `item-${item}`);
-    if (img.texture.key !== `item-${item}`) img.setTexture(`item-${item}`);
-    return img.setVisible(true).setAlpha(1).setScale(ITEM_BELT);
+  private sprite(item: ItemId): Sprite {
+    const s = this.free.pop() ?? { img: this.scene.add.image(0, 0, `item-${item}`), sh: this.scene.add.image(0, 0, ITEM_SHADOW).setDepth(SHADOW_DEPTH) };
+    if (s.img.texture.key !== `item-${item}`) s.img.setTexture(`item-${item}`);
+    s.img.setVisible(true).setAlpha(1).setScale(ITEM_BELT);
+    s.sh.setVisible(true);
+    return s;
   }
 
-  private release(img: Phaser.GameObjects.Image) {
-    img.setVisible(false);
-    this.free.push(img);
+  private release(s: Sprite) {
+    s.img.setVisible(false);
+    s.sh.setVisible(false);
+    this.free.push(s);
+  }
+
+  /**
+   * Draw a good at (x, y): `lift` raises it off the belt (its shadow stays on the belt, shrinks
+   * and fades), `sx`/`sy` squash it, `k` scales it as a whole (swallowed by a crate).
+   */
+  private draw(s: Sprite, item: ItemId, x: number, y: number, rot: number, lift = 0, sx = 1, sy = 1, k = 1) {
+    const z = ITEM_SIZE[item];
+    s.img.setPosition(x, y - lift).setScale(ITEM_BELT * sx * k, ITEM_BELT * sy * k).setRotation(rot).setDepth(DEPTH + y * 1e-6 + x * 1e-9);
+    const f = 1 - Math.min(1, lift / 30) * 0.35;
+    const w = (z.w * 0.55 + z.h * 0.45) * 1.02 * sx * k * f;
+    s.sh.setPosition(x + 1.5, y + z.h * 0.3 * k).setDisplaySize(w, w * 0.4).setAlpha(shadowAlpha(item) * f);
   }
 
   private reset(w: World) {
-    for (const v of this.vis.values()) this.release(v.img);
-    for (const g of this.ghosts) this.release(g.img);
+    for (const v of this.vis.values()) this.release(v);
+    for (const g of this.ghosts) this.release(g);
     this.vis.clear();
     this.ghosts = [];
     this.held.clear();
@@ -235,7 +260,7 @@ export class ItemFlow {
         this.vis.set(s.it, { ...g, belt: s.belt, ox: g.x - s.x, oy: g.y - s.y, tx: s.x, ty: s.y });
         continue;
       }
-      const v: Vis = { img: this.image(s.it.item), item: s.it.item, x: s.x, y: s.y, ox: 0, oy: 0, rot: jitter(s.it.item), belt: s.belt, age: this.settled ? 0 : Infinity, tx: s.x, ty: s.y, hidden: false };
+      const v: Vis = { ...this.sprite(s.it.item), item: s.it.item, x: s.x, y: s.y, ox: 0, oy: 0, rot: jitter(s.it.item), belt: s.belt, age: this.settled ? 0 : Infinity, tx: s.x, ty: s.y, hidden: false };
       const di = dropped.findIndex((d) => d.item === s.it.item && nearTile(d.ins, 1, s.x, s.y));
       if (di >= 0) {
         const [gx, gy] = grabberGrip(dropped[di].ins, 1);
@@ -251,19 +276,19 @@ export class ItemFlow {
     for (const g of gone) {
       const belt = g.belt;
       if (g.hidden) {
-        this.release(g.img);
+        this.release(g);
         continue;
       }
       const gi = grabbed.findIndex((ins) => ins.held === g.item && nearTile(ins, -1, g.x, g.y));
       if (gi >= 0) {
         this.handoff.set(grabbed[gi].id, { x: g.x, y: g.y });
         grabbed.splice(gi, 1);
-        this.release(g.img);
+        this.release(g);
         continue;
       }
       // A removed belt takes its goods with it; anything else ran off the end into a sink.
-      if (!w.entities.has(belt.id)) this.release(g.img);
-      else this.ghosts.push({ img: g.img, x: g.x, y: g.y, dx: DX[belt.dir], dy: DY[belt.dir], t: 0 });
+      if (!w.entities.has(belt.id)) this.release(g);
+      else this.ghosts.push({ img: g.img, sh: g.sh, item: g.item, x: g.x, y: g.y, dx: DX[belt.dir], dy: DY[belt.dir], t: 0 });
     }
     this.settled = true;
 
@@ -274,6 +299,7 @@ export class ItemFlow {
       const v = this.vis.get(s.it)!;
       if (s.hidden) {
         v.img.setVisible(false);
+        v.sh.setVisible(false);
         v.hidden = true;
         v.ox = v.oy = 0;
         v.x = v.tx = s.x;
@@ -285,6 +311,7 @@ export class ItemFlow {
         // It moves up in step with the piece ahead as the queue closes up.
         const a = s.ahead && this.vis.get(s.ahead);
         v.img.setVisible(true);
+        v.sh.setVisible(true);
         v.hidden = false;
         v.age = 0;
         v.ox = a ? a.ox : 0;
@@ -315,14 +342,21 @@ export class ItemFlow {
           v.oy = v.y - s.y;
         }
       }
-      let sc = ITEM_BELT;
+      let lift = 0;
+      let sx = 1;
+      let sy = 1;
       if (v.age < POP_TIME) {
+        // Drops out of the chute at full size, lands with a squash and settles.
         v.age += dt;
         const u = Math.min(1, v.age / POP_TIME);
-        // Squash-and-settle as it drops out of a chute.
-        sc *= 0.55 + 0.45 * u + Math.sin(u * Math.PI) * 0.12;
+        if (u < POP_FALL) lift = POP_HEIGHT * (1 - (u / POP_FALL) ** 2);
+        else {
+          const q = Math.sin(((u - POP_FALL) / (1 - POP_FALL)) * Math.PI) * 0.13;
+          sx = 1 + q;
+          sy = 1 - q;
+        }
       }
-      v.img.setPosition(v.x, v.y).setScale(sc).setRotation(v.rot).setDepth(DEPTH + v.y * 1e-6 + v.x * 1e-9);
+      this.draw(v, v.item, v.x, v.y, v.rot, lift, sx, sy);
     }
     for (let i = this.ghosts.length - 1; i >= 0; i--) {
       const g = this.ghosts[i];
@@ -330,9 +364,9 @@ export class ItemFlow {
       const u = Math.min(1, g.t / SINK_TIME);
       // Swallowed whole: it shrinks into the mouth at full opacity rather than fading out.
       const e = u * u;
-      g.img.setPosition(g.x + g.dx * 16 * e, g.y + g.dy * 16 * e).setScale(ITEM_BELT * (1 - 0.75 * e));
+      this.draw(g, g.item, g.x + g.dx * 16 * e, g.y + g.dy * 16 * e, g.img.rotation, 0, 1, 1, 1 - 0.75 * e);
       if (u >= 1) {
-        this.release(g.img);
+        this.release(g);
         this.ghosts.splice(i, 1);
       }
     }
