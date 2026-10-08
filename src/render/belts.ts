@@ -459,11 +459,14 @@ export function drawCap(ctx: Ctx, cx: number, cy: number, e: Dir) {
 }
 
 /**
- * Side inlet where a feeder belt joins this one from side `e`: a bolted steel funnel plate that
- * bridges the side rail, with a painted chevron pointing into the run and posts where the rail
- * is cut. Drawn around the receiving tile's centre (cx, cy).
+ * Side-load joint where a feeder belt joins this one from side `e`. The receiving belt's side rail
+ * carries on across the opening, cut down into a notch the goods ride over: a recessed, hatched
+ * channel with lit step walls, an entry lip on the feeder side with a comb that tips goods into the
+ * lane, bolted brackets clamping the feeder's rails to this one, and a painted merge chevron that
+ * points into the lane, leaning the way the lane runs (`along`: +1 or -1 along local x).
+ * Drawn around the receiving tile's centre (cx, cy).
  */
-export function drawInlet(ctx: Ctx, cx: number, cy: number, e: Dir) {
+export function drawInlet(ctx: Ctx, cx: number, cy: number, e: Dir, along = 1) {
   const ux = DX[e];
   const uy = DY[e];
   ctx.save();
@@ -473,111 +476,113 @@ export function drawInlet(ctx: Ctx, cx: number, cy: number, e: Dir) {
   const L = { x: LX * uy - LY * ux, y: LX * ux + LY * uy };
   const sx = 3 * uy - 5 * ux;
   const sy = 3 * ux + 5 * uy;
-  const Y0 = BED - 3;
-  const Y1 = H + 5;
-  const plate = (dx: number, dy: number) => {
-    ctx.beginPath();
-    ctx.moveTo(-BED - 2 + dx, Y0 + dy);
-    ctx.lineTo(BED + 2 + dx, Y0 + dy);
-    ctx.lineTo(OUTER - 2 + dx, Y1 + dy);
-    ctx.lineTo(-OUTER + 2 + dx, Y1 + dy);
-    ctx.closePath();
-  };
-  ctx.fillStyle = 'rgba(28,14,8,0.32)';
-  plate(sx * 0.6, sy * 0.6);
-  ctx.fill();
-  // Steel plate with a raised diamond tread.
-  plate(0, 0);
-  ctx.fillStyle = css(PALETTE.steel, -0.12);
+  const N = BED - 1; // half width of the opening
+  const R0 = RAIL - RAIL_W / 2 - 0.6; // inner face of the rail
+  const R1 = RAIL + RAIL_W / 2 + 0.6; // outer face of the rail
+  const LIP = H + 3; // where the entry lip ends on the feeder side
+  // Notch: the rail cut down to just above the bed, a dark recessed channel, hatched.
+  ctx.beginPath();
+  ctx.rect(-N, R0, N * 2, R1 - R0);
+  ctx.fillStyle = css(PALETTE.steel, -0.5);
   ctx.fill();
   ctx.save();
-  plate(0, 0);
   ctx.clip();
-  for (let y = Y0 + 2; y < Y1; y += 4.5) {
-    for (let x = -OUTER + ((y - Y0) % 9 < 4.5 ? 0 : 3.5); x < OUTER; x += 7) {
-      ctx.lineCap = 'round';
-      ctx.lineWidth = 1.6;
-      ctx.strokeStyle = 'rgba(16,10,10,0.55)';
-      ctx.beginPath();
-      ctx.moveTo(x - 1.4, y + 1.6);
-      ctx.lineTo(x + 1.4, y - 0.8);
-      ctx.stroke();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = css(PALETTE.steel, 0.45);
-      ctx.beginPath();
-      ctx.moveTo(x - 1.4, y + 0.8);
-      ctx.lineTo(x + 1.4, y - 1.6);
-      ctx.stroke();
-    }
-  }
-  // The flank turned from the light is hatched.
-  const shadeRight = L.x < 0;
-  ctx.beginPath();
-  if (shadeRight) {
-    ctx.moveTo(BED - 6, Y0);
-    ctx.lineTo(BED + 3, Y0);
-    ctx.lineTo(OUTER, Y1);
-    ctx.lineTo(OUTER - 12, Y1);
-  } else {
-    ctx.moveTo(-BED + 6, Y0);
-    ctx.lineTo(-BED - 3, Y0);
-    ctx.lineTo(-OUTER, Y1);
-    ctx.lineTo(-OUTER + 12, Y1);
-  }
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(16,10,10,0.25)';
-  ctx.fill();
-  ctx.clip();
-  ctx.strokeStyle = 'rgba(16,10,10,0.55)';
+  ctx.strokeStyle = 'rgba(12,8,8,0.6)';
   ctx.lineWidth = 1;
-  for (let i = -60; i < 60; i += 3) {
+  for (let i = -N - 12; i < N + 4; i += 3) {
     ctx.beginPath();
-    ctx.moveTo(i, Y0);
-    ctx.lineTo(i + 20, Y1);
+    ctx.moveTo(i, R0);
+    ctx.lineTo(i + 10, R1);
     ctx.stroke();
   }
+  // Polished wear stripe where goods slide across the notch floor.
+  ctx.fillStyle = css(PALETTE.steel, 0.15, 0.55);
+  ctx.fillRect(-N + 4, (R0 + R1) / 2 - 0.8, N * 2 - 8, 1.6);
   ctx.restore();
-  // Worn lip where goods slide off onto the belt: lit when it faces the light.
-  ctx.fillStyle = -L.y > 0 ? css(PALETTE.steel, 0.5) : css(PALETTE.steel, -0.45);
-  ctx.fillRect(-BED - 1.5, Y0, BED * 2 + 3, 2.4);
-  plate(0, 0);
+  // Step walls at both ends of the notch: the face turned toward the light is lit.
+  for (const side of [-1, 1]) {
+    const x = side * N;
+    const lit = -side * L.x > 0;
+    ctx.fillStyle = lit ? css(PALETTE.steel, 0.55) : 'rgba(16,10,10,0.8)';
+    ctx.fillRect(side > 0 ? x - 2.2 : x, R0, 2.2, R1 - R0);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(x, R0 - 1);
+    ctx.lineTo(x, R1 + 1);
+    ctx.stroke();
+  }
+  // Inner rail edge stays inked across the opening: the lane is still walled on this side.
   ctx.strokeStyle = INK;
-  ctx.lineWidth = 2.4;
-  ctx.lineJoin = 'round';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(-N, R0);
+  ctx.lineTo(N, R0);
   ctx.stroke();
-  // Painted merge chevron.
+  // Entry lip: a bevelled steel threshold bridging the seam between the feeder and the rail, with
+  // a comb on its inner edge reaching into the notch.
+  ctx.fillStyle = 'rgba(28,14,8,0.3)';
+  ctx.fillRect(-N + sx * 0.4, R1 - 1 + sy * 0.4, N * 2, LIP - R1 + 1);
+  ctx.beginPath();
+  ctx.rect(-N, R1 - 1, N * 2, LIP - R1 + 1);
+  ctx.fillStyle = css(PALETTE.steel, -0.1);
+  ctx.fill();
+  ctx.fillStyle = L.y < 0 ? css(PALETTE.steel, 0.5) : css(PALETTE.steel, -0.45);
+  ctx.fillRect(-N, R1 - 1, N * 2, 1.6);
+  ctx.fillStyle = css(PALETTE.steel, -0.1);
+  for (let x = -N + 2; x < N - 2; x += 5) ctx.fillRect(x, R1 - 3.6, 2.6, 3);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.4;
+  for (let x = -N + 2; x < N - 2; x += 5) ctx.strokeRect(x, R1 - 3.6, 2.6, 3);
+  ctx.beginPath();
+  ctx.rect(-N, R1 - 1, N * 2, LIP - R1 + 1);
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+  // Painted merge chevron on the notch, pointing into the lane and leaning downstream.
+  const tipY = R0 - 2;
+  const armY = R1 + 2.5;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.beginPath();
-  ctx.moveTo(-8, Y0 + 12);
-  ctx.lineTo(0, Y0 + 5);
-  ctx.lineTo(8, Y0 + 12);
+  ctx.moveTo(-9 + along * 1.5, armY);
+  ctx.lineTo(along * 4, tipY);
+  ctx.lineTo(9 + along * 1.5, armY);
   ctx.strokeStyle = INK;
-  ctx.lineWidth = 5.5;
+  ctx.lineWidth = 6;
   ctx.stroke();
-  ctx.strokeStyle = css(PALETTE.hazard, -0.05);
-  ctx.lineWidth = 2.8;
+  ctx.strokeStyle = css(PALETTE.hazard, 0.05);
+  ctx.lineWidth = 3;
   ctx.stroke();
-  // Posts capping the cut rail on both sides of the opening.
+  // Brackets clamping the feeder's rails onto this belt's rail at both ends of the opening.
   for (const side of [-1, 1]) {
-    const px = side * (OUTER - 1);
-    const py = RAIL - 1;
+    const px = side * RAIL;
+    const y0 = R0 + 1;
+    const y1 = H + 11;
+    ctx.fillStyle = 'rgba(28,14,8,0.35)';
     ctx.beginPath();
-    ctx.roundRect(px - 5, py - 6, 10, 12, 2.5);
+    ctx.roundRect(px - 5 + sx * 0.5, y0 + sy * 0.5, 10, y1 - y0, 3);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.roundRect(px - 5, y0, 10, y1 - y0, 3);
     ctx.fillStyle = css(PALETTE.steel, 0);
     ctx.fill();
     ctx.save();
     ctx.clip();
     const lx = L.x > 0 ? 1 : -1;
     ctx.fillStyle = css(PALETTE.steel, 0.45);
-    ctx.fillRect(px + lx * 3 - 1.5, py - 7, 3, 14);
+    ctx.fillRect(px + lx * 3 - 1.5, y0 - 1, 3, y1 - y0 + 2);
     ctx.fillStyle = css(PALETTE.steel, -0.45);
-    ctx.fillRect(px - lx * 3 - 1.5, py - 7, 3, 14);
+    ctx.fillRect(px - lx * 3 - 1.5, y0 - 1, 3, y1 - y0 + 2);
+    ctx.fillStyle = 'rgba(16,10,10,0.5)';
+    ctx.fillRect(px - 5, H - 0.6, 10, 1.2);
     ctx.restore();
     ctx.strokeStyle = INK;
     ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(px - 5, y0, 10, y1 - y0, 3);
     ctx.stroke();
-    rivet(ctx, px, py, 2);
+    rivet(ctx, px, RAIL, 1.9);
+    rivet(ctx, px, H + 6, 1.9);
   }
   ctx.restore();
 }
@@ -912,7 +917,7 @@ function extrude(ctx: Ctx, x: number, y: number) {
 
 /**
  * The belt atlas: `${shape}-${frame}` tread frames, `sh-${shape}` ground shadows and
- * `cap-${dir}` end rollers, `inlet-${side}` side-feed plates, plus a standalone `belt-icon` for the toolbar and placement ghost.
+ * `cap-${dir}` end rollers, `inlet-${side}-${dir}` side-load joints, plus a standalone `belt-icon` for the toolbar and placement ghost.
  */
 export function makeBelts(scene: Phaser.Scene) {
   const list = shapes();
@@ -921,7 +926,8 @@ export function makeBelts(scene: Phaser.Scene) {
   const chevY = rowsY + CELL + CAP;
   const jamY = chevY + rowsY;
   const paintY = jamY + CELL;
-  const [ctx, tex] = canvas(scene, BELT_ATLAS, W, paintY + CELL);
+  const joinY = paintY + CELL;
+  const [ctx, tex] = canvas(scene, BELT_ATLAS, W, joinY + CAP);
   list.forEach((sh, row) => {
     for (let f = 0; f < BELT_FRAMES; f++) {
       const x = f * CELL;
@@ -980,8 +986,12 @@ export function makeBelts(scene: Phaser.Scene) {
     const y = rowsY + CELL;
     drawCap(ctx, e * CAP + CAP / 2, y + CAP / 2, e as Dir);
     tex.add(`cap-${e}`, 0, e * CAP, y, CAP, CAP);
-    drawInlet(ctx, (e + 4) * CAP + CAP / 2, y + CAP / 2, e as Dir);
-    tex.add(`inlet-${e}`, 0, (e + 4) * CAP, y, CAP, CAP);
+    // Side-load joints, one per feeder side and receiving direction (the chevron leans downstream).
+    for (const [k, d] of [(e + 1) % 4, (e + 3) % 4].entries()) {
+      const i = e * 2 + k;
+      drawInlet(ctx, i * CAP + CAP / 2, joinY + CAP / 2, e as Dir, DX[d] * DY[e] - DY[d] * DX[e]);
+      tex.add(`inlet-${e}-${d}`, 0, i * CAP, joinY, CAP, CAP);
+    }
     // Feed lips sit in the free space after the caps and inlets: four 80-wide cells.
     ctx.save();
     ctx.beginPath();

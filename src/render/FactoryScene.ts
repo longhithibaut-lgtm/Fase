@@ -5,7 +5,7 @@ import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/wor
 import { Hud } from './hud';
 import { Fx, launchPod, machineView, makeMachines, type View } from './machines';
 import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, makePod, makeSite } from './site';
-import { BELT_ATLAS, CARGO_PAINT, FEED_SHIFT, IDLE_PAINT, JAM_PAINT, SIM_STEP, beltClock, beltShapeKey, makeBelts } from './belts';
+import { BELT_ATLAS, CARGO_PAINT, FEED_SHIFT, IDLE_PAINT, SIM_STEP, beltClock, beltShapeKey, makeBelts } from './belts';
 import { ItemFlow } from './flow';
 import { makeItems } from './items';
 import { TILE, makeShared } from './textures';
@@ -363,7 +363,7 @@ export class FactoryScene extends Phaser.Scene {
         const tape = this.add.image(cx, cy, BELT_ATLAS, 'jam-s0').setDepth(2.03).setVisible(false);
         const capBack = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.05);
         const capFront = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.06);
-        const inlets = [1, 3].map(() => this.add.image(cx, cy, BELT_ATLAS, 'inlet-0').setDepth(2.07).setVisible(false));
+        const inlets = [1, 3].map(() => this.add.image(cx, cy, BELT_ATLAS, 'inlet-0-1').setDepth(2.07).setVisible(false));
         const feed = this.add.image(cx, cy, BELT_ATLAS, 'feed-0').setDepth(2.04).setVisible(false);
         const glow = this.add.image(cx, cy, 'glow').setDepth(3.38).setBlendMode(Phaser.BlendModes.ADD).setVisible(false);
         const beacon = this.add.image(cx, cy, BELT_ATLAS, 'beacon-wait').setDepth(3.4).setVisible(false);
@@ -377,13 +377,17 @@ export class FactoryScene extends Phaser.Scene {
             const f = this.flow.beltFrame(b, beltClock(w).frame);
             const c = w.isCurve(b);
             const key = beltShapeKey(b.dir, c.curve, c.from);
-            img.setFrame(`${key}-${f}`);
-            // Chevrons painted in the colour of the cargo this stretch carries; a stopped,
-            // backed-up stretch turns them amber and runs hazard tape along its rails.
+            // Chevrons painted in the colour of the cargo this stretch carries. A full, stopped
+            // stretch goes dark: its tread dims, its chevrons fade out under the packed goods and
+            // hazard tape runs along its rails, so a backed-up line reads at a glance.
             const cargo = this.flow.cargoOf(b);
             const stall = this.flow.stalled(b);
             const paint = cargo ? CARGO_PAINT[cargo] : IDLE_PAINT;
-            arrows.setFrame(`v${key}-${f}`).setTint(stall > 0.5 ? JAM_PAINT : paint).setAlpha(stall > 0.5 ? 0.95 : cargo ? 0.8 : 0.4);
+            img.setFrame(`${key}-${f}`);
+            if (stall > 0) img.setTint(lerpGrey(stall, STALL_TREAD));
+            else img.clearTint();
+            arrows.setFrame(`v${key}-${f}`).setTint(paint).setAlpha((cargo ? 0.8 : 0.4) * (1 - stall));
+            arrows.setVisible(stall < 1);
             // The rail tops carry a stripe in the cargo's colour, swapped for hazard tape on a jam.
             rail.setVisible(!!cargo && stall < 1);
             if (cargo) {
@@ -439,12 +443,12 @@ export class FactoryScene extends Phaser.Scene {
             const tail = !c.curve && !w.beltFeedsInto(w.entityAt(b.x + DX[back], b.y + DY[back]), b);
             capBack.setVisible(tail);
             if (tail) capBack.setFrame(`cap-${back}`);
-            // Feeders joining from the sides of a straight run get a merge plate across the rail.
+            // Feeders joining from the sides of a straight run get a side-load joint notched into the rail.
             [1, 3].forEach((turn, i) => {
               const side = ((b.dir + turn) % 4) as Dir;
               const feeds = !c.curve && w.beltFeedsInto(w.entityAt(b.x + DX[side], b.y + DY[side]), b);
               inlets[i].setVisible(feeds);
-              if (feeds) inlets[i].setFrame(`inlet-${side}`);
+              if (feeds) inlets[i].setFrame(`inlet-${side}-${b.dir}`);
             });
           },
         };
@@ -517,4 +521,13 @@ export class FactoryScene extends Phaser.Scene {
       this.cursor.setVisible(true).setSize(s * TILE, s * TILE).setOrigin(0.5).setPosition((x + s / 2) * TILE, (y + s / 2) * TILE);
     }
   }
+}
+
+/** Tread tint on a fully stopped stretch: darker and a touch cooler, so the goods on it pop. */
+const STALL_TREAD = 0x7c7588;
+
+/** White blended toward `to` by t (0..1), as a tint. */
+function lerpGrey(t: number, to: number): number {
+  const ch = (sh: number) => Math.round(255 + (((to >> sh) & 255) - 255) * t);
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
 }

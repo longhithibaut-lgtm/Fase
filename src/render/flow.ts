@@ -28,6 +28,11 @@ const POP_HEIGHT = 12;
 /** Share of a tile kept clear in front of an end roller. */
 const END_INSET = 0.28;
 /**
+ * Where a good waits on a belt that side-loads into another: at the seam, its nose on the entry lip
+ * of the joint, clear of the goods passing in the lane, until the sim finds it a free slot.
+ */
+const SIDE_HOLD = 0.875;
+/**
  * How far two goods' ink outlines overlap in a standing queue, in world pixels: a stopped queue is
  * squeezed shut, each piece pressed against the next (so it reads tighter than any free-running
  * stream, which rides one per slot), yet every outline still shows, so the pieces stay countable.
@@ -217,7 +222,8 @@ export class ItemFlow {
       const tail = !c.curve && !prev;
       // Same rule as the sim: a belt continues into one that runs on or turns (not a side-load).
       const next = ahead?.kind === 'belt' && ahead.dir !== back && (ahead.dir === e.dir || w.isCurve(ahead).curve) ? ahead : null;
-      lanes.set(e, { c, lo: tail ? END_INSET : 0, hi: deadEnd ? 1 - END_INSET : 1, len: c.curve ? CURVE_LEN : 1, next, prev });
+      const sideLoad = !deadEnd && !next && ahead?.kind === 'belt';
+      lanes.set(e, { c, lo: tail ? END_INSET : 0, hi: deadEnd ? 1 - END_INSET : sideLoad ? SIDE_HOLD : 1, len: c.curve ? CURVE_LEN : 1, next, prev });
     }
     /** Screen point at belt position u on b, carried onto the belt before / after it past the seams. */
     const at = (b: Belt, L: Lane, u: number): [number, number] => {
@@ -453,7 +459,35 @@ export class ItemFlow {
     }
 
     // New items: the same goods moving on from a neighbouring belt, a grabber's drop, or a pop-in.
+    // First by structure: a good that left the front of a belt reappears on the belt that one runs
+    // into (a seam, a corner or a side-load), however far its drawn spot moved; distance alone can
+    // miss a side-load, which hops from the seam to the middle of the lane.
+    const adopt = (s: Seen, g: Vis) => {
+      // Riding on across a seam keeps its own settling offset; only a real jump (a side-load,
+      // a queue spilling over) becomes a slide.
+      const jump = Math.abs(g.tx - s.x) + Math.abs(g.ty - s.y) > hop;
+      this.vis.set(s.it, { ...g, belt: s.belt, ox: jump ? g.x - s.x : g.ox, oy: jump ? g.y - s.y : g.oy, tx: s.x, ty: s.y });
+    };
+    for (let i = gone.length - 1; i >= 0; i--) {
+      const g = gone[i];
+      const into = w.entityAt(g.belt.x + DX[g.belt.dir], g.belt.y + DY[g.belt.dir]);
+      if (into?.kind !== 'belt' || !w.entities.has(g.belt.id)) continue;
+      let best = -1;
+      let bestD = Infinity;
+      fresh.forEach((s, j) => {
+        if (s.belt !== into || s.it.item !== g.item || this.vis.has(s.it)) return;
+        const d = (g.x - s.x) ** 2 + (g.y - s.y) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = j;
+        }
+      });
+      if (best < 0) continue;
+      adopt(fresh[best], g);
+      gone.splice(i, 1);
+    }
     for (const s of fresh) {
+      if (this.vis.has(s.it)) continue;
       let best = -1;
       let bestD = MATCH * MATCH;
       gone.forEach((g, i) => {
@@ -465,11 +499,7 @@ export class ItemFlow {
         }
       });
       if (best >= 0) {
-        const g = gone.splice(best, 1)[0];
-        // Riding on across a seam keeps its own settling offset; only a real jump (a side-load,
-        // a queue spilling over) becomes a slide.
-        const jump = Math.abs(g.tx - s.x) + Math.abs(g.ty - s.y) > hop;
-        this.vis.set(s.it, { ...g, belt: s.belt, ox: jump ? g.x - s.x : g.ox, oy: jump ? g.y - s.y : g.oy, tx: s.x, ty: s.y });
+        adopt(s, gone.splice(best, 1)[0]);
         continue;
       }
       const v: Vis = { ...this.sprite(s.it.item), item: s.it.item, x: s.x, y: s.y, ox: 0, oy: 0, rot: 0, belt: s.belt, age: this.settled ? 0 : Infinity, tx: s.x, ty: s.y, hidden: false };
