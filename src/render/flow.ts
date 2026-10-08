@@ -39,6 +39,8 @@ const CURVE_LEN = Math.PI / 4;
 const MIN_DRAWN = SHOW_GAP * TILE * 0.85;
 /** Seconds a stretch of belt must hold only stopped goods before its tread stops too. */
 const STALL_DELAY = 0.2;
+/** Seconds for a stopped stretch's hazard marking to come up fully. */
+const STALL_FADE = 0.35;
 /** Seconds for a jam beacon to come on or go out (hysteresis: a queue indexing forward at a grabber keeps it lit). */
 const BEACON_TIME = 0.7;
 /** Belt travel in world pixels per sim tick, plus slack: anything faster is a queue closing up. */
@@ -320,6 +322,15 @@ export class ItemFlow {
     if (f !== undefined) return f;
     this.frozen.set(b, frame);
     return frame;
+  }
+
+  /**
+   * How backed up belt `b` reads, 0..1: zero while anything on it moves, easing up to one over
+   * STALL_FADE once it has held nothing but a standing queue for STALL_DELAY.
+   */
+  stalled(b: Belt): number {
+    const t = (this.still.get(b) ?? 0) - STALL_DELAY;
+    return t <= 0 ? 0 : Math.min(1, t / STALL_FADE);
   }
 
   /** What belt `b` carries: the last good that rode it, if any ever did. */

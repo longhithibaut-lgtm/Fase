@@ -30,6 +30,8 @@ export const CARGO_PAINT: Record<ItemId, number> = {
   circuit: 0x96e650,
 };
 export const IDLE_PAINT = PALETTE.hazard;
+/** Chevron paint on a stopped, backed-up stretch: the same amber as the queue-head beacon. */
+export const JAM_PAINT = 0xffa21e;
 /** Simulation step the scene runs the world at (seconds). */
 export const SIM_STEP = 1 / 60;
 /**
@@ -63,9 +65,9 @@ const OUTER = 30.5;
 const LX = -0.6;
 const LY = -0.8;
 
-const RUBBER = '#4b3f48';
-const SLAT = '#6d5d67';
-const SLAT_LIT = '#a3909a';
+const RUBBER = '#30282f';
+const SLAT = '#4b4049';
+const SLAT_LIT = '#887680';
 
 interface Pt {
   x: number;
@@ -811,6 +813,41 @@ function drawFeed(ctx: Ctx, cx: number, cy: number, e: Dir) {
   ctx.restore();
 }
 
+/**
+ * Backed-up marking: hazard tape (amber and ink stripes) laid along the top of both rails. Shown on
+ * every stretch that holds nothing but a standing queue, so a jam reads at a glance even where the
+ * packed goods hide the chevrons.
+ */
+function drawJamTape(ctx: Ctx, path: Path) {
+  for (const side of [-1, 1]) {
+    const o = side * RAIL;
+    band(ctx, path, o - 3.2, o + 3.2, -2, path.len + 2);
+    ctx.fillStyle = css(JAM_PAINT, -0.02);
+    ctx.fill();
+    ctx.save();
+    band(ctx, path, o - 3.2, o + 3.2, -2, path.len + 2);
+    ctx.clip();
+    // Ink stripes across the tape, slanted along the travel direction.
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'butt';
+    for (let s = -8; s < path.len + 8; s += 8) {
+      const p = path.at(s);
+      const [x0, y0] = off(p, o - 6);
+      const [x1, y1] = off(path.at(s + 6), o + 6);
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    }
+    // Lit lip toward the light, worn shadow on the far edge.
+    ctx.restore();
+    shadedEdge(ctx, path, o - side * 2.6, -side, 1.2, 'rgba(255,236,170,0.9)', 'rgba(16,10,10,0.5)', -2, path.len + 2);
+    strokeRibbon(ctx, path, o - 3.6, 1.1, INK);
+    strokeRibbon(ctx, path, o + 3.6, 1.1, INK);
+  }
+}
+
 export interface BeltShape {
   key: string;
   path: (ox: number, oy: number) => Path;
@@ -848,7 +885,8 @@ export function makeBelts(scene: Phaser.Scene) {
   const W = Math.max(CELL * BELT_FRAMES, CAP * 12 + 64);
   const rowsY = CELL * list.length;
   const chevY = rowsY + CELL + CAP;
-  const [ctx, tex] = canvas(scene, BELT_ATLAS, W, chevY + rowsY);
+  const jamY = chevY + rowsY;
+  const [ctx, tex] = canvas(scene, BELT_ATLAS, W, jamY + CELL);
   list.forEach((sh, row) => {
     for (let f = 0; f < BELT_FRAMES; f++) {
       const x = f * CELL;
@@ -884,6 +922,15 @@ export function makeBelts(scene: Phaser.Scene) {
     ctx.restore();
     extrude(ctx, x, rowsY);
     tex.add(`sh-${sh.key}`, 0, x + PAD, rowsY + PAD, TILE, TILE);
+    // Hazard tape for a backed-up stretch.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + PAD, jamY + PAD, TILE, TILE);
+    ctx.clip();
+    drawJamTape(ctx, sh.path(x + PAD + H, jamY + PAD + H));
+    ctx.restore();
+    extrude(ctx, x, jamY);
+    tex.add(`jam-${sh.key}`, 0, x + PAD, jamY + PAD, TILE, TILE);
   });
   for (let e = 0; e < 4; e++) {
     const y = rowsY + CELL;

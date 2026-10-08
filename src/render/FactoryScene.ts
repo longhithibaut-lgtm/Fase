@@ -5,7 +5,7 @@ import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/wor
 import { Hud } from './hud';
 import { Fx, launchPod, machineView, makeMachines, type View } from './machines';
 import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, makePod, makeSite } from './site';
-import { BELT_ATLAS, CARGO_PAINT, FEED_SHIFT, IDLE_PAINT, SIM_STEP, beltClock, beltShapeKey, makeBelts } from './belts';
+import { BELT_ATLAS, CARGO_PAINT, FEED_SHIFT, IDLE_PAINT, JAM_PAINT, SIM_STEP, beltClock, beltShapeKey, makeBelts } from './belts';
 import { ItemFlow } from './flow';
 import { makeItems } from './items';
 import { TILE, makeShared } from './textures';
@@ -359,6 +359,7 @@ export class FactoryScene extends Phaser.Scene {
         const shadow = this.add.image(cx + 3, cy + 5, BELT_ATLAS, 'sh-s0').setDepth(1.9).setAlpha(0.34);
         const img = this.add.image(cx, cy, BELT_ATLAS, 's0-0').setDepth(2);
         const arrows = this.add.image(cx, cy, BELT_ATLAS, 'vs0-0').setDepth(2.01);
+        const tape = this.add.image(cx, cy, BELT_ATLAS, 'jam-s0').setDepth(2.03).setVisible(false);
         const capBack = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.05);
         const capFront = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.06);
         const inlets = [1, 3].map(() => this.add.image(cx, cy, BELT_ATLAS, 'inlet-0').setDepth(2.07).setVisible(false));
@@ -367,7 +368,7 @@ export class FactoryScene extends Phaser.Scene {
         const beacon = this.add.image(cx, cy, BELT_ATLAS, 'beacon-wait').setDepth(3.4).setVisible(false);
         const alert = this.add.image(cx, cy, BELT_ATLAS, 'jam-alert').setDepth(9.8).setVisible(false);
         return {
-          parts: [shadow, img, arrows, capBack, capFront, ...inlets, feed, glow, beacon, alert],
+          parts: [shadow, img, arrows, tape, capBack, capFront, ...inlets, feed, glow, beacon, alert],
           update: (e, time) => {
             const b = e as Belt;
             const w = this.world;
@@ -376,9 +377,17 @@ export class FactoryScene extends Phaser.Scene {
             const c = w.isCurve(b);
             const key = beltShapeKey(b.dir, c.curve, c.from);
             img.setFrame(`${key}-${f}`);
-            // Chevrons painted in the colour of the cargo this stretch carries.
+            // Chevrons painted in the colour of the cargo this stretch carries; a stopped,
+            // backed-up stretch turns them amber and runs hazard tape along its rails.
             const cargo = this.flow.cargoOf(b);
-            arrows.setFrame(`v${key}-${f}`).setTint(cargo ? CARGO_PAINT[cargo] : IDLE_PAINT).setAlpha(cargo ? 0.62 : 0.4);
+            const stall = this.flow.stalled(b);
+            const paint = cargo ? CARGO_PAINT[cargo] : IDLE_PAINT;
+            arrows.setFrame(`v${key}-${f}`).setTint(stall > 0.5 ? JAM_PAINT : paint).setAlpha(stall > 0.5 ? 0.95 : cargo ? 0.62 : 0.4);
+            tape.setVisible(stall > 0);
+            if (stall > 0) {
+              if (tape.frame.name !== `jam-${key}`) tape.setFrame(`jam-${key}`);
+              tape.setAlpha(stall * (0.82 + 0.18 * Math.sin(time / 380)));
+            }
             if (shadow.frame.name !== `sh-${key}`) shadow.setFrame(`sh-${key}`);
             const next = w.entityAt(b.x + DX[b.dir], b.y + DY[b.dir]);
             // Into a crate or the elevator the run dives under the housing; anywhere else that
