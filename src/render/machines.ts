@@ -455,7 +455,8 @@ function makeFx(scene: Phaser.Scene) {
 // Drill 2x2: one bold gantry. A hazard-yellow motor housing bridges two thick jack legs, and from
 // its belly a single big fluted auger screws down into a flanged bore in a dark steel ground skid.
 // The skid covers the deposit under the machine so nothing clutters its base; the cuttings it
-// throws up (dust and chips in the ore's own colour) burst from the bore while it works. A turning
+// throws up (dust and grit in a pale tint of the ore, small enough never to pass for goods) burst
+// from the bore while it works. A turning
 // top drive with a hazard wedge sits on the housing so the spin also reads from above.
 const DRILL = {
   bore: { x: 64, y: 98 }, // hole centre on the body texture
@@ -1861,7 +1862,7 @@ const GRIP = 22; // held item distance ahead of the wrist: clear of the housing,
 const REACH = 32; // shoulder to wrist with the arm out over a pick-up or drop tile
 const CLAW_OPEN = 0.74; // finger swing (radians) with the jaws open
 const CLAW_SHUT = 0.04; // finger swing with the jaws shut on nothing
-const HELD = 0.94; // held goods' scale relative to riding a belt
+const HELD = 1; // held goods keep their belt size: every good is drawn at one size everywhere
 
 /**
  * Finger swing that closes the hooked tips on the sides of a good `hw` pixels in half-width, so the
@@ -2715,7 +2716,7 @@ function drillView(h: MachineHost, e: Entity): View {
         nextChip = time + 110 + Math.random() * 90;
         const s = Math.random() < 0.5 ? -1 : 1;
         const x = boreX + s * (24 + Math.random() * 6);
-        fx.spawn('fx-chip', x, boreY, { vx: s * (70 + Math.random() * 60), vy: -60 - Math.random() * 40, g: 520, drag: 1, life: 0.4, s0: 0.75 + Math.random() * 0.5, s1: 0.6, a0: 1, a1: 0.8, tint: oreTint, spin: 9, depth: 4.2 });
+        fx.spawn('fx-chip', x, boreY, { vx: s * (70 + Math.random() * 60), vy: -60 - Math.random() * 40, g: 520, drag: 1, life: 0.4, s0: 0.45 + Math.random() * 0.2, s1: 0.3, a0: 1, a1: 0, tint: dustTint, spin: 9, depth: 4.2 });
       }
       if (cut) {
         // A load cut free: a ring of dust off the flange and a burst of cuttings.
@@ -2727,7 +2728,7 @@ function drillView(h: MachineHost, e: Entity): View {
         for (let i = 0; i < 7; i++) {
           const s = i % 2 ? 1 : -1;
           const a = s > 0 ? -0.35 - Math.random() * 0.5 : Math.PI + 0.35 + Math.random() * 0.5;
-          fx.spawn('fx-chip', boreX + s * 24, boreY, { vx: Math.cos(a) * 150, vy: Math.sin(a) * 150 - 40, g: 520, drag: 1, life: 0.6, s0: 1.15, s1: 0.75, a0: 1, a1: 0.8, tint: oreTint, spin: 10, depth: 4.2 });
+          fx.spawn('fx-chip', boreX + s * 24, boreY, { vx: Math.cos(a) * 150, vy: Math.sin(a) * 150 - 40, g: 520, drag: 1, life: 0.5, s0: 0.6, s1: 0.35, a0: 1, a1: 0, tint: dustTint, spin: 10, depth: 4.2 });
         }
       }
       if (m.active && time > nextPuff) {
@@ -3235,11 +3236,8 @@ function grabberView(h: MachineHost, e: Entity): View {
       if (event) {
         const gx = wx + fwx * GRIP;
         const gy = wy + fwy * GRIP;
-        fx.spawn('fx-dustring', gx, gy + 3, { life: 0.32, s0: 0.12, s1: 0.32, a0: 0.8, a1: 0, rot: 0, depth: 5.02 });
-        for (let i = 0; i < 3; i++) {
-          const da = Math.random() * Math.PI * 2;
-          fx.spawn('fx-dust', gx + Math.cos(da) * 7, gy + Math.sin(da) * 5 + 2, { vx: Math.cos(da) * 30, vy: Math.sin(da) * 18 - 10, drag: 2.5, life: 0.42, s0: 0.18, s1: 0.38, a0: 0.85, a1: 0, spin: 2, depth: 5.4 });
-        }
+        // Only a ring: loose puffs here would read as stray goods beside the one being moved.
+        fx.spawn('fx-dustring', gx, gy + 3, { life: 0.26, s0: 0.16, s1: 0.36, a0: 0.6, a1: 0, rot: 0, depth: 5.02 });
       }
       // Shadows: offset to the lower right, further when the arm is lifted.
       const o1 = 3 + lift * 2;

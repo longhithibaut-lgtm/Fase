@@ -1,16 +1,16 @@
 import Phaser from 'phaser';
 import type { Campaign, CampaignEvent } from '../sim/campaign';
-import { BELT_SPEED, BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
+import { BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/world';
 import { Hud } from './hud';
 import { Fx, launchPod, machineView, makeMachines, type View } from './machines';
 import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, makePod, makeSite } from './site';
-import { BELT_ATLAS, BELT_FRAMES, BELT_PERIOD, beltShapeKey, makeBelts } from './belts';
+import { BELT_ATLAS, SIM_STEP, beltClock, beltShapeKey, makeBelts } from './belts';
 import { ItemFlow } from './flow';
 import { makeItems } from './items';
 import { TILE, makeShared } from './textures';
 
-const STEP = 1 / 60;
+const STEP = SIM_STEP;
 /** Room kept free around the plot for the HUD, in screen pixels. */
 const MARGIN = { top: 92, bottom: 96, side: 28 };
 
@@ -366,7 +366,7 @@ export class FactoryScene extends Phaser.Scene {
           update: (e, time) => {
             const b = e as Belt;
             const w = this.world;
-            const f = Math.floor(((time / 1000) * BELT_SPEED * TILE * BELT_FRAMES) / BELT_PERIOD) % BELT_FRAMES;
+            const f = beltClock(w).frame;
             const c = w.isCurve(b);
             const key = beltShapeKey(b.dir, c.curve, c.from);
             img.setFrame(`${key}-${f}`);

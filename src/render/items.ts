@@ -531,6 +531,9 @@ const RIM_INK = 0.8;
  */
 const ITEM_MAX = (50 / 64) * ITEM_TEX;
 const ITEM_MEAN = (46 / 64) * ITEM_TEX;
+/** Outer contour of a riding good, in texture pixels, and its colour (deeper than the art's ink). */
+const OUTLINE = 4;
+const OUTLINE_INK = '#0b0507';
 /** Paint resolution: the art is drawn at twice the texture size and filtered down once. */
 const HI = ITEM_TEX * 2;
 
@@ -539,7 +542,7 @@ export const ITEM_SIZE = {} as Record<ItemId, { w: number; h: number }>;
 /** Soft elliptical contact shadow laid on the belt under every good. */
 export const ITEM_SHADOW = 'item-shadow';
 /** Contact shadow strength per good: see-through glass casts a lighter one. */
-export const shadowAlpha = (id: ItemId) => (id === 'glass' ? 0.26 : 0.4);
+export const shadowAlpha = (id: ItemId) => (id === 'glass' ? 0.34 : 0.55);
 
 /** The art's silhouette grown by `r` texture pixels, filled with `color`. */
 function grown(art: HTMLCanvasElement, r: number, color: string): HTMLCanvasElement {
@@ -631,9 +634,12 @@ export function makeItems(scene: Phaser.Scene) {
       const [ctx, tex] = canvas(scene, `item-${id}`, ITEM_TEX, ITEM_TEX);
       ctx.save();
       const t = ITEM_TEX / 64;
-      ctx.globalAlpha = id === 'glass' ? 0.55 : 0.85;
-      ctx.drawImage(grown(art, 0.5 * t, INK), 0, 1.3 * t);
+      ctx.globalAlpha = id === 'glass' ? 0.55 : 0.9;
+      ctx.drawImage(grown(art, 1.1 * t, INK), 0, 1.4 * t);
       ctx.restore();
+      // A second, darker contour outside the art's own ink (about 1.5px on screen at belt size),
+      // so a dark good still cuts a clean silhouette out of the dark belt rubber.
+      ctx.drawImage(grown(art, OUTLINE, OUTLINE_INK), 0, 0);
       ctx.drawImage(art, 0, 0);
       punch(ctx);
       tex.refresh();

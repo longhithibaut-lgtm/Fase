@@ -3,7 +3,8 @@
 // hatching on the far side. All frames live in one atlas so a whole factory's belts batch together.
 
 import Phaser from 'phaser';
-import { DX, DY, type Dir } from '../sim/world';
+import { BELT_SPEED } from '../sim/defs';
+import { DX, DY, type Dir, type World } from '../sim/world';
 import { INK, PALETTE, TILE, canvas, css, type Ctx } from './textures';
 import { mulberry32 } from '../sim/rng';
 
@@ -11,6 +12,24 @@ export const BELT_FRAMES = 16;
 /** Tread travel over one animation loop, in pixels: one slat pair with its chevron. */
 export const BELT_PERIOD = 32;
 export const BELT_ATLAS = 'belts';
+/** Simulation step the scene runs the world at (seconds). */
+export const SIM_STEP = 1 / 60;
+/**
+ * Goods ride in slots: one slot per chevron, so a good in transit covers its chevron and the arrows
+ * show only in empty slots. In belt-position units (one tile = 1, corners included).
+ */
+export const SLOT = BELT_PERIOD / TILE;
+/** Where the first chevron sits in a frame-0 tile, in belt-position units. */
+const SLOT0 = 8 / TILE;
+
+/**
+ * The belt clock: tread frame and slot phase, both driven by the simulation's own tick so goods
+ * (moved by the sim) and chevrons (painted in the tread frames) travel exactly in step.
+ */
+export function beltClock(w: World): { frame: number; slot: number } {
+  const frame = Math.floor((w.tick * SIM_STEP * BELT_SPEED * TILE * BELT_FRAMES) / BELT_PERIOD + 1e-6) % BELT_FRAMES;
+  return { frame, slot: SLOT0 + (frame / BELT_FRAMES) * SLOT };
+}
 
 const PAD = 2; // extruded border around tiling cells so bilinear filtering never shows seams
 const CELL = TILE + PAD * 2;
@@ -196,6 +215,8 @@ function slat(ctx: Ctx, path: Path, s: number, half: number) {
 
 function chevron(ctx: Ctx, path: Path, s: number) {
   // Sharper than a right angle so it still reads as an arrow when a curve turns it diagonal.
+  // Worn stencil paint, knocked well back: the arrows mark the slots and the direction on an
+  // empty belt but never compete with the goods riding over them.
   const tip = path.at(s + 3.5);
   const mid = path.at(s - 4);
   const [tx, ty] = off(tip, 0);
@@ -207,11 +228,11 @@ function chevron(ctx: Ctx, path: Path, s: number) {
   ctx.moveTo(lx, ly);
   ctx.lineTo(tx, ty);
   ctx.lineTo(rx, ry);
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 5;
+  ctx.strokeStyle = 'rgba(20,12,14,0.35)';
+  ctx.lineWidth = 4.6;
   ctx.stroke();
-  ctx.strokeStyle = css(PALETTE.hazard, -0.08, 0.92);
-  ctx.lineWidth = 2.4;
+  ctx.strokeStyle = css(PALETTE.hazard, -0.12, 0.4);
+  ctx.lineWidth = 2.2;
   ctx.stroke();
 }
 
