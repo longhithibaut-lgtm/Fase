@@ -19,6 +19,10 @@ const DEMOS: Record<string, Step[]> = {
     ['inserter', 9, 5, 0],
     ['inserter', 11, 3, 1],
     ['line', 12, 3, 1, 4],
+    // A second carbon drill side-loads into the carbon line through a T-junction.
+    ['miner', 1, 9, 1],
+    ['line', 3, 9, 1, 2],
+    ['line', 5, 9, 0, 2],
   ],
   gears: [
     ['miner', 3, 2, 1],
@@ -27,6 +31,9 @@ const DEMOS: Record<string, Step[]> = {
     ['furnace', 10, 2],
     ['miner', 1, 7, 1],
     ['line', 3, 7, 1, 7],
+    // A second carbon drill side-loads into the carbon line through a T-junction.
+    ['miner', 2, 9, 1],
+    ['line', 4, 9, 0, 2],
     ['line', 10, 7, 0, 3],
     ['inserter', 10, 4, 0],
     ['inserter', 12, 2, 1],

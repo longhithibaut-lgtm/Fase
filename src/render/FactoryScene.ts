@@ -359,6 +359,7 @@ export class FactoryScene extends Phaser.Scene {
         const shadow = this.add.image(cx + 3, cy + 5, BELT_ATLAS, 'sh-s0').setDepth(1.9).setAlpha(0.34);
         const img = this.add.image(cx, cy, BELT_ATLAS, 's0-0').setDepth(2);
         const arrows = this.add.image(cx, cy, BELT_ATLAS, 'vs0-0').setDepth(2.01);
+        const rail = this.add.image(cx, cy, BELT_ATLAS, 'rail-s0').setDepth(2.02).setVisible(false);
         const tape = this.add.image(cx, cy, BELT_ATLAS, 'jam-s0').setDepth(2.03).setVisible(false);
         const capBack = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.05);
         const capFront = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.06);
@@ -368,7 +369,7 @@ export class FactoryScene extends Phaser.Scene {
         const beacon = this.add.image(cx, cy, BELT_ATLAS, 'beacon-wait').setDepth(3.4).setVisible(false);
         const alert = this.add.image(cx, cy, BELT_ATLAS, 'jam-alert').setDepth(9.8).setVisible(false);
         return {
-          parts: [shadow, img, arrows, tape, capBack, capFront, ...inlets, feed, glow, beacon, alert],
+          parts: [shadow, img, arrows, rail, tape, capBack, capFront, ...inlets, feed, glow, beacon, alert],
           update: (e, time) => {
             const b = e as Belt;
             const w = this.world;
@@ -382,7 +383,13 @@ export class FactoryScene extends Phaser.Scene {
             const cargo = this.flow.cargoOf(b);
             const stall = this.flow.stalled(b);
             const paint = cargo ? CARGO_PAINT[cargo] : IDLE_PAINT;
-            arrows.setFrame(`v${key}-${f}`).setTint(stall > 0.5 ? JAM_PAINT : paint).setAlpha(stall > 0.5 ? 0.95 : cargo ? 0.62 : 0.4);
+            arrows.setFrame(`v${key}-${f}`).setTint(stall > 0.5 ? JAM_PAINT : paint).setAlpha(stall > 0.5 ? 0.95 : cargo ? 0.8 : 0.4);
+            // The rail tops carry a stripe in the cargo's colour, swapped for hazard tape on a jam.
+            rail.setVisible(!!cargo && stall < 1);
+            if (cargo) {
+              if (rail.frame.name !== `rail-${key}`) rail.setFrame(`rail-${key}`);
+              rail.setTint(paint).setAlpha(1 - stall);
+            }
             tape.setVisible(stall > 0);
             if (stall > 0) {
               if (tape.frame.name !== `jam-${key}`) tape.setFrame(`jam-${key}`);

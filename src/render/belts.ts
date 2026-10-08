@@ -15,14 +15,15 @@ export const BELT_ATLAS = 'belts';
 /**
  * Chevron paint per cargo: once goods have run over a stretch its arrows take their colour, so
  * each line reads as the line of one product even between pieces. Bright, light tints of each
- * good's own colour (dark carbon shows as pale ash); unused belts keep hazard yellow.
+ * good's own colour (dark carbon shows as violet, the tint of its facets); unused belts keep hazard
+ * yellow.
  */
 export const CARGO_PAINT: Record<ItemId, number> = {
   'ferrite-ore': 0xff7a45,
   'cuprite-ore': 0x45e0c4,
-  carbon: 0xc4bccf,
+  carbon: 0xb79cff,
   silica: 0xeef8ff,
-  'ferrite-bar': 0x9cc8f2,
+  'ferrite-bar': 0x5eacff,
   'cuprite-bar': 0x6cf2dc,
   glass: 0xb4ecff,
   gear: 0xffc93a,
@@ -31,7 +32,7 @@ export const CARGO_PAINT: Record<ItemId, number> = {
 };
 export const IDLE_PAINT = PALETTE.hazard;
 /** Chevron paint on a stopped, backed-up stretch: the same amber as the queue-head beacon. */
-export const JAM_PAINT = 0xffa21e;
+export const JAM_PAINT = 0xffb81e;
 /** Simulation step the scene runs the world at (seconds). */
 export const SIM_STEP = 1 / 60;
 /**
@@ -814,37 +815,70 @@ function drawFeed(ctx: Ctx, cx: number, cy: number, e: Dir) {
 }
 
 /**
- * Backed-up marking: hazard tape (amber and ink stripes) laid along the top of both rails. Shown on
- * every stretch that holds nothing but a standing queue, so a jam reads at a glance even where the
- * packed goods hide the chevrons.
+ * Backed-up marking: the rails of a stopped stretch are wrapped in hazard tape, amber with red
+ * diagonal bands between inked edges, covering the whole rail so a jam reads at a glance, even
+ * where the packed goods hide the bed, and never mistaken for the yellow-and-ink trim on machines.
  */
 function drawJamTape(ctx: Ctx, path: Path) {
+  const HW = RAIL_W / 2 + 1.4;
   for (const side of [-1, 1]) {
     const o = side * RAIL;
-    band(ctx, path, o - 3.2, o + 3.2, -2, path.len + 2);
-    ctx.fillStyle = css(JAM_PAINT, -0.02);
+    band(ctx, path, o - HW, o + HW, -2, path.len + 2);
+    ctx.fillStyle = css(JAM_PAINT, 0.02);
     ctx.fill();
     ctx.save();
-    band(ctx, path, o - 3.2, o + 3.2, -2, path.len + 2);
+    band(ctx, path, o - HW, o + HW, -2, path.len + 2);
     ctx.clip();
-    // Ink stripes across the tape, slanted along the travel direction.
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 3;
+    // Red bands across the tape, slanted along the travel direction, each with an ink trailing edge.
     ctx.lineCap = 'butt';
-    for (let s = -8; s < path.len + 8; s += 8) {
-      const p = path.at(s);
-      const [x0, y0] = off(p, o - 6);
-      const [x1, y1] = off(path.at(s + 6), o + 6);
+    // A whole number of bands per tile, so the tape runs on unbroken across tile seams.
+    const per = path.len / Math.round(path.len / 16);
+    for (let s = -per; s < path.len + per; s += per) {
+      const [x0, y0] = off(path.at(s), o - 8);
+      const [x1, y1] = off(path.at(s + per / 2), o + 8);
       ctx.beginPath();
       ctx.moveTo(x0, y0);
       ctx.lineTo(x1, y1);
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 9.5;
+      ctx.stroke();
+      ctx.strokeStyle = '#e8321b';
+      ctx.lineWidth = 7;
       ctx.stroke();
     }
-    // Lit lip toward the light, worn shadow on the far edge.
+    // Shadowed half of the tape (the side turned from the light) is hatched.
+    const l = sideLight(path, side);
+    if (l < 0) hatchBand(ctx, path, o + side * 0.5, o + side * HW, 0.35, 2.4);
+    else hatchBand(ctx, path, o - side * HW, o - side * 0.5, 0.35, 2.4);
     ctx.restore();
-    shadedEdge(ctx, path, o - side * 2.6, -side, 1.2, 'rgba(255,236,170,0.9)', 'rgba(16,10,10,0.5)', -2, path.len + 2);
-    strokeRibbon(ctx, path, o - 3.6, 1.1, INK);
-    strokeRibbon(ctx, path, o + 3.6, 1.1, INK);
+    // Lit lip toward the light, inked borders, scuffs.
+    shadedEdge(ctx, path, o - side * (HW - 1.4), -side, 1.3, 'rgba(255,240,190,0.95)', 'rgba(16,10,10,0.55)', -2, path.len + 2);
+    strokeRibbon(ctx, path, o - HW, 1.6, INK);
+    strokeRibbon(ctx, path, o + HW, 1.6, INK);
+  }
+}
+
+/**
+ * Cargo stripe: a worn painted line along the top of both rails, white here so the scene can tint
+ * it with the colour of the good the run carries. It shows on full belts too, where the goods hide
+ * the chevrons, so every line says what it carries from across the site.
+ */
+function drawRailPaint(ctx: Ctx, path: Path, seed: number) {
+  const rng = mulberry32(seed);
+  for (const side of [-1, 1]) {
+    const o = side * RAIL;
+    strokeRibbon(ctx, path, o, 6.6, INK);
+    strokeRibbon(ctx, path, o, 4.4, '#ffffff');
+    // Lit lip toward the light, shadowed edge of the paint, and chips worn through to the steel.
+    shadedEdge(ctx, path, o - side * 1.3, -side, 1, 'rgba(255,255,255,0)', 'rgba(70,60,60,0.5)', -2, path.len + 2);
+    shadedEdge(ctx, path, o + side * 1.3, side, 1, 'rgba(255,255,255,0)', 'rgba(70,60,60,0.5)', -2, path.len + 2);
+    for (let i = 0; i < 3; i++) {
+      const [x, y] = off(path.at(4 + rng() * (path.len - 8)), o + (rng() - 0.5) * 1.6);
+      ctx.fillStyle = css(PALETTE.steel, -0.3);
+      ctx.beginPath();
+      ctx.ellipse(x, y, 0.8 + rng() * 1.4, 0.7 + rng() * 0.6, rng() * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
@@ -886,7 +920,8 @@ export function makeBelts(scene: Phaser.Scene) {
   const rowsY = CELL * list.length;
   const chevY = rowsY + CELL + CAP;
   const jamY = chevY + rowsY;
-  const [ctx, tex] = canvas(scene, BELT_ATLAS, W, jamY + CELL);
+  const paintY = jamY + CELL;
+  const [ctx, tex] = canvas(scene, BELT_ATLAS, W, paintY + CELL);
   list.forEach((sh, row) => {
     for (let f = 0; f < BELT_FRAMES; f++) {
       const x = f * CELL;
@@ -931,6 +966,15 @@ export function makeBelts(scene: Phaser.Scene) {
     ctx.restore();
     extrude(ctx, x, jamY);
     tex.add(`jam-${sh.key}`, 0, x + PAD, jamY + PAD, TILE, TILE);
+    // Cargo stripe along the rail tops.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + PAD, paintY + PAD, TILE, TILE);
+    ctx.clip();
+    drawRailPaint(ctx, sh.path(x + PAD + H, paintY + PAD + H), 31 + row * 5);
+    ctx.restore();
+    extrude(ctx, x, paintY);
+    tex.add(`rail-${sh.key}`, 0, x + PAD, paintY + PAD, TILE, TILE);
   });
   for (let e = 0; e < 4; e++) {
     const y = rowsY + CELL;

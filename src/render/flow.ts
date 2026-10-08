@@ -28,15 +28,28 @@ const POP_HEIGHT = 12;
 /** Share of a tile kept clear in front of an end roller. */
 const END_INSET = 0.28;
 /**
- * Closest two goods are drawn, in tiles along the belt: one slot pitch, so a standing queue reads
- * as a packed line of separate pieces, tighter than any free-running stream. The sim packs a
- * stopped queue four to a tile; the surplus waits out of sight until a slot opens.
+ * How far two goods' ink outlines overlap in a standing queue, in world pixels: a stopped queue is
+ * squeezed shut, each piece pressed against the next (so it reads tighter than any free-running
+ * stream, which rides one per slot), yet every outline still shows, so the pieces stay countable.
+ * The sim packs a stopped queue four to a tile; the surplus waits out of sight until room opens.
  */
-const SHOW_GAP = 0.5;
+const SQUEEZE = 1.5;
 /** Centre-line length of a corner, in tiles. */
 const CURVE_LEN = Math.PI / 4;
-/** Closest two neighbours may ever be drawn while sliding, in world pixels. */
-const MIN_DRAWN = SHOW_GAP * TILE * 0.85;
+
+/** A good's length along a belt heading `dir` (corners take the mean), in world pixels. */
+function extent(item: ItemId, dir: Dir, curve: boolean): number {
+  const z = ITEM_SIZE[item];
+  if (!z) return 26;
+  if (curve) return (z.w + z.h) / 2;
+  return dir === 1 || dir === 3 ? z.w : z.h;
+}
+
+/** Centre spacing, in tiles, of two goods pressed together in a queue on belt `b`. */
+function packGap(a: ItemId | undefined, b: ItemId, belt: Belt, curve: boolean): number {
+  const ea = a ? extent(a, belt.dir, curve) : extent(b, belt.dir, curve);
+  return ((ea + extent(b, belt.dir, curve)) / 2 - SQUEEZE) / TILE;
+}
 /** Seconds a stretch of belt must hold only stopped goods before its tread stops too. */
 const STALL_DELAY = 0.2;
 /** Seconds for a stopped stretch's hazard marking to come up fully. */
@@ -257,7 +270,7 @@ export class ItemFlow {
       lastStopped.set(b, false);
       const L = lanes.get(b)!;
       const ahead0 = L.next ? place(L.next) : Infinity;
-      let limit = L.len + ahead0 - SHOW_GAP;
+      let aheadD = L.len + ahead0;
       let rear = b.items.length ? L.lo * L.len : L.len + ahead0;
       let full = false;
       let ahead = L.next ? (last.get(L.next) ?? null) : null;
@@ -274,6 +287,7 @@ export class ItemFlow {
         let u = moving ? snap(it.pos) : it.pos;
         u = Math.min(Math.max(u, L.prev ? -0.5 : L.lo), L.next ? 1.5 : L.hi);
         let d = u * L.len;
+        const limit = aheadD - (ahead ? packGap(ahead.item, it.item, b, L.c.curve) : 0);
         let grid = moving;
         let held = !moving;
         if (d > limit) {
@@ -289,7 +303,7 @@ export class ItemFlow {
           d = floor;
         }
         rear = d;
-        limit = d - SHOW_GAP;
+        aheadD = d;
         let x: number;
         let y: number;
         if (grid) [x, y] = at(b, L, d / L.len);
@@ -358,6 +372,17 @@ export class ItemFlow {
       else this.still.delete(e);
     }
     for (const m of [this.cargo, this.still]) for (const b of m.keys()) if (w.entities.get(b.id) !== b) m.delete(b);
+    // A stretch whose goods are taken the moment they reach it (a grabber at the end of a run)
+    // may never be seen carrying one: it takes the cargo of the belt that feeds it.
+    for (let pass = 0; pass < 3; pass++) {
+      for (const e of w.entities.values()) {
+        if (e.kind !== 'belt' || this.cargo.has(e)) continue;
+        const { from: side } = w.isCurve(e);
+        const from = w.entityAt(e.x + DX[side], e.y + DY[side]);
+        const c = from?.kind === 'belt' && w.beltFeedsInto(from, e) ? this.cargo.get(from) : undefined;
+        if (c) this.cargo.set(e, c);
+      }
+    }
     for (const b of this.frozen.keys()) if (!this.still.has(b)) this.frozen.delete(b);
     // Belts some grabber picks from: goods waiting there are a buffer, not a dead end.
     const picked = new Set<Entity>();
@@ -515,15 +540,16 @@ export class ItemFlow {
       if (Math.abs(v.oy) < 0.3) v.oy = 0;
       v.x = s.x + v.ox;
       v.y = s.y + v.oy;
-      // Mid-slide pieces never ride up onto the one ahead: hold back at the minimum spacing.
+      // Mid-slide pieces never ride up onto the one ahead: hold back at the packed spacing.
       const a = s.ahead && this.vis.get(s.ahead);
       if (a && !a.hidden) {
         const dx = v.x - a.x;
         const dy = v.y - a.y;
         const d = Math.hypot(dx, dy);
-        if (d > 0.01 && d < MIN_DRAWN) {
-          v.x = a.x + (dx / d) * MIN_DRAWN;
-          v.y = a.y + (dy / d) * MIN_DRAWN;
+        const min = packGap(a.item, v.item, s.belt, false) * TILE * 0.92;
+        if (d > 0.01 && d < min) {
+          v.x = a.x + (dx / d) * min;
+          v.y = a.y + (dy / d) * min;
           v.ox = v.x - s.x;
           v.oy = v.y - s.y;
         }
