@@ -4,7 +4,7 @@
 // swallows an item at the belt's edge); here those hops become short slides, pulls and gulps.
 
 import Phaser from 'phaser';
-import type { ItemId } from '../sim/defs';
+import { BELT_SPEED, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type BeltItem, type Dir, type Inserter, type World } from '../sim/world';
 import { ITEM_BELT } from './items';
 import { grabberGrip } from './machines';
@@ -19,6 +19,18 @@ const SINK_TIME = 0.14;
 const POP_TIME = 0.16;
 /** Share of a tile kept clear in front of an end roller. */
 const END_INSET = 0.18;
+/**
+ * Closest two goods are drawn, in tiles along the belt. The sim packs a stopped queue four to a
+ * tile; drawn that tight the sprites smear into one column, so a queue is shown as a row of
+ * separate pieces and the surplus waits out of sight until a slot opens.
+ */
+const SHOW_GAP = 0.8;
+/** Centre-line length of a corner, in tiles. */
+const CURVE_LEN = Math.PI / 4;
+/** Closest two neighbours may ever be drawn while sliding, in world pixels. */
+const MIN_DRAWN = SHOW_GAP * TILE * 0.85;
+/** Belt travel in world pixels per second, plus slack: anything faster is a queue closing up. */
+const TRAVEL = BELT_SPEED * TILE * 1.6;
 
 interface Vis {
   img: Phaser.GameObjects.Image;
@@ -34,6 +46,10 @@ interface Vis {
   belt: Belt;
   /** Seconds since it popped out of a drill or a crate; Infinity once settled. */
   age: number;
+  /** Its laid-out spot last frame, to tell belt travel from a queue closing up. */
+  tx: number;
+  ty: number;
+  hidden: boolean;
 }
 
 interface Ghost {
@@ -50,6 +66,24 @@ interface Seen {
   belt: Belt;
   x: number;
   y: number;
+  /** Packed too tight to show: the sim keeps more goods per tile than fit visibly on it. */
+  hidden: boolean;
+  /** The next piece ahead of it in the queue, if any. */
+  ahead: BeltItem | null;
+}
+
+/** How a belt lays out its goods on screen. */
+interface Lane {
+  c: { curve: boolean; from: Dir };
+  /** Share of the tile kept clear at the entrance / exit (end rollers). */
+  lo: number;
+  hi: number;
+  /** Centre-line length in tiles. */
+  len: number;
+  /** The belt this one runs straight into (its goods queue across the seam), if any. */
+  next: Belt | null;
+  /** The belt that runs straight into this one, if any. */
+  prev: Belt | null;
 }
 
 /** Raw goods tumble a little; made parts ride square. */
@@ -95,6 +129,65 @@ export class ItemFlow {
     this.settled = false;
   }
 
+  /** Where every belt item is drawn: its sim spot, held back so queued goods stay apart. */
+  private layout(w: World): Seen[] {
+    const lanes = new Map<Belt, Lane>();
+    for (const e of w.entities.values()) {
+      if (e.kind !== 'belt') continue;
+      const c = w.isCurve(e);
+      const back = ((e.dir + 2) % 4) as Dir;
+      const ahead = w.entityAt(e.x + DX[e.dir], e.y + DY[e.dir]);
+      // Goods queue up short of an end roller instead of riding over it.
+      const deadEnd = !ahead || (ahead.kind === 'belt' ? ahead.dir === back : ahead.kind !== 'chest' && ahead.kind !== 'elevator');
+      const feeder = w.entityAt(e.x + DX[c.from], e.y + DY[c.from]);
+      const prev = feeder?.kind === 'belt' && w.beltFeedsInto(feeder, e) ? feeder : null;
+      const tail = !c.curve && !prev;
+      // Same rule as the sim: a belt continues into one that runs on or turns (not a side-load).
+      const next = ahead?.kind === 'belt' && ahead.dir !== back && (ahead.dir === e.dir || w.isCurve(ahead).curve) ? ahead : null;
+      lanes.set(e, { c, lo: tail ? END_INSET : 0, hi: deadEnd ? 1 - END_INSET : 1, len: c.curve ? CURVE_LEN : 1, next, prev });
+    }
+    // Free run (in tiles) from a belt's entrance to the first drawn item ahead, across seams,
+    // and that item. Goods are listed downstream first, so each one follows the piece ahead.
+    const room = new Map<Belt, number>();
+    const last = new Map<Belt, BeltItem | null>();
+    const out: Seen[] = [];
+    const place = (b: Belt): number => {
+      const done = room.get(b);
+      if (done !== undefined) return done;
+      room.set(b, Infinity); // a closed loop of belts: no queue to respect around the loop
+      last.set(b, null);
+      const L = lanes.get(b)!;
+      const ahead0 = L.next ? place(L.next) : Infinity;
+      let limit = L.len + ahead0 - SHOW_GAP;
+      let rear = b.items.length ? L.lo * L.len : L.len + ahead0;
+      let full = false;
+      let ahead = L.next ? (last.get(L.next) ?? null) : null;
+      for (let i = b.items.length - 1; i >= 0; i--) {
+        const it = b.items[i];
+        let d = Math.min((L.lo + (L.hi - L.lo) * Math.min(it.pos, 1)) * L.len, limit);
+        // A queue backed up past the entrance spills onto the belt feeding this one.
+        const pl = L.prev ? lanes.get(L.prev)! : null;
+        const floor = pl ? -(pl.hi - pl.lo) * pl.len : L.lo * L.len;
+        if (full || d < floor) {
+          full = true;
+          d = floor;
+        } else rear = d;
+        limit = d - SHOW_GAP;
+        let x: number;
+        let y: number;
+        if (d >= L.lo * L.len || !pl) [x, y] = this.beltItemPos(b, d / L.len, L.c);
+        else [x, y] = this.beltItemPos(L.prev!, pl.hi + d / pl.len, pl.c);
+        out.push({ it, belt: b, x, y, hidden: full, ahead });
+        if (!full) ahead = it;
+      }
+      room.set(b, rear);
+      last.set(b, ahead);
+      return rear;
+    };
+    for (const b of lanes.keys()) place(b);
+    return out;
+  }
+
   update(w: World, dt: number) {
     if (w !== this.world) this.reset(w);
     // Hand-offs live for one frame: the grabber views read them right after this update.
@@ -110,22 +203,7 @@ export class ItemFlow {
       this.held.set(e.id, e.held);
     }
 
-    const now: Seen[] = [];
-    for (const e of w.entities.values()) {
-      if (e.kind !== 'belt' || !e.items.length) continue;
-      const c = w.isCurve(e);
-      // Goods queue up short of an end roller instead of riding over it.
-      const back = ((e.dir + 2) % 4) as Dir;
-      const next = w.entityAt(e.x + DX[e.dir], e.y + DY[e.dir]);
-      const deadEnd = !next || (next.kind === 'belt' ? next.dir === back : next.kind !== 'chest' && next.kind !== 'elevator');
-      const tail = !c.curve && !w.beltFeedsInto(w.entityAt(e.x + DX[back], e.y + DY[back]), e);
-      const lo = tail ? END_INSET : 0;
-      const hi = deadEnd ? 1 - END_INSET : 1;
-      for (const it of e.items) {
-        const [x, y] = this.beltItemPos(e, lo + (hi - lo) * Math.min(it.pos, 1), c);
-        now.push({ it, belt: e, x, y });
-      }
-    }
+    const now = this.layout(w);
     const fresh: Seen[] = [];
     const live = new Map<BeltItem, Seen>();
     for (const s of now) {
@@ -154,10 +232,10 @@ export class ItemFlow {
       });
       if (best >= 0) {
         const g = gone.splice(best, 1)[0];
-        this.vis.set(s.it, { ...g, belt: s.belt, ox: g.x - s.x, oy: g.y - s.y });
+        this.vis.set(s.it, { ...g, belt: s.belt, ox: g.x - s.x, oy: g.y - s.y, tx: s.x, ty: s.y });
         continue;
       }
-      const v: Vis = { img: this.image(s.it.item), item: s.it.item, x: s.x, y: s.y, ox: 0, oy: 0, rot: jitter(s.it.item), belt: s.belt, age: this.settled ? 0 : Infinity };
+      const v: Vis = { img: this.image(s.it.item), item: s.it.item, x: s.x, y: s.y, ox: 0, oy: 0, rot: jitter(s.it.item), belt: s.belt, age: this.settled ? 0 : Infinity, tx: s.x, ty: s.y, hidden: false };
       const di = dropped.findIndex((d) => d.item === s.it.item && nearTile(d.ins, 1, s.x, s.y));
       if (di >= 0) {
         const [gx, gy] = grabberGrip(dropped[di].ins, 1);
@@ -172,6 +250,10 @@ export class ItemFlow {
     // Items that left the belts: into a claw, or swallowed by whatever the belt runs into.
     for (const g of gone) {
       const belt = g.belt;
+      if (g.hidden) {
+        this.release(g.img);
+        continue;
+      }
       const gi = grabbed.findIndex((ins) => ins.held === g.item && nearTile(ins, -1, g.x, g.y));
       if (gi >= 0) {
         this.handoff.set(grabbed[gi].id, { x: g.x, y: g.y });
@@ -187,14 +269,52 @@ export class ItemFlow {
 
     // Draw.
     const k = Math.exp(-SETTLE * dt);
-    for (const [it, v] of this.vis) {
-      const s = live.get(it)!;
+    const hop = TRAVEL * dt + 2;
+    for (const s of now) {
+      const v = this.vis.get(s.it)!;
+      if (s.hidden) {
+        v.img.setVisible(false);
+        v.hidden = true;
+        v.ox = v.oy = 0;
+        v.x = v.tx = s.x;
+        v.y = v.ty = s.y;
+        continue;
+      }
+      if (v.hidden) {
+        // A slot opened at the back of a packed queue: the next piece drops into view.
+        // It moves up in step with the piece ahead as the queue closes up.
+        const a = s.ahead && this.vis.get(s.ahead);
+        v.img.setVisible(true);
+        v.hidden = false;
+        v.age = 0;
+        v.ox = a ? a.ox : 0;
+        v.oy = a ? a.oy : 0;
+      } else if (Math.abs(s.x - v.tx) + Math.abs(s.y - v.ty) > hop) {
+        // The queue closed up (the piece in front was taken): slide into the new slot, don't snap.
+        v.ox += v.tx - s.x;
+        v.oy += v.ty - s.y;
+      }
+      v.tx = s.x;
+      v.ty = s.y;
       v.ox *= k;
       v.oy *= k;
       if (Math.abs(v.ox) < 0.3) v.ox = 0;
       if (Math.abs(v.oy) < 0.3) v.oy = 0;
       v.x = s.x + v.ox;
       v.y = s.y + v.oy;
+      // Mid-slide pieces never ride up onto the one ahead: hold back at the minimum spacing.
+      const a = s.ahead && this.vis.get(s.ahead);
+      if (a && !a.hidden) {
+        const dx = v.x - a.x;
+        const dy = v.y - a.y;
+        const d = Math.hypot(dx, dy);
+        if (d > 0.01 && d < MIN_DRAWN) {
+          v.x = a.x + (dx / d) * MIN_DRAWN;
+          v.y = a.y + (dy / d) * MIN_DRAWN;
+          v.ox = v.x - s.x;
+          v.oy = v.y - s.y;
+        }
+      }
       let sc = ITEM_BELT;
       if (v.age < POP_TIME) {
         v.age += dt;
@@ -208,10 +328,9 @@ export class ItemFlow {
       const g = this.ghosts[i];
       g.t += dt;
       const u = Math.min(1, g.t / SINK_TIME);
-      g.img
-        .setPosition(g.x + g.dx * 12 * u, g.y + g.dy * 12 * u)
-        .setScale(ITEM_BELT * (1 - 0.45 * u))
-        .setAlpha(1 - u * u);
+      // Swallowed whole: it shrinks into the mouth at full opacity rather than fading out.
+      const e = u * u;
+      g.img.setPosition(g.x + g.dx * 16 * e, g.y + g.dy * 16 * e).setScale(ITEM_BELT * (1 - 0.75 * e));
       if (u >= 1) {
         this.release(g.img);
         this.ghosts.splice(i, 1);

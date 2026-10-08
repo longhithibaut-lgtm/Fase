@@ -188,12 +188,12 @@ export function bolt(ctx: Ctx, x: number, y: number) {
 export const ITEM_LOOK: Record<ItemId, number> = {
   'ferrite-ore': 0xb5532e,
   'cuprite-ore': 0x35b8a6,
-  carbon: 0x34303a,
+  carbon: 0x3a3446,
   silica: 0xbfe6f0,
-  'ferrite-bar': 0xc9714a,
+  'ferrite-bar': 0x5f8fc4,
   'cuprite-bar': 0x4fd1bd,
   glass: 0xa9e4f5,
-  gear: 0x8d9aa6,
+  gear: 0xe6aa2e,
   wire: 0x3fc7b3,
   circuit: 0x7bc043,
 };

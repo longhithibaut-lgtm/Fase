@@ -1,6 +1,7 @@
 // Goods: each one gets its own silhouette, colour and material so it reads at a glance on a dark
 // belt, in a claw or on a screen. Painted at twice the display resolution with three flat tones
-// per face (lit / mid / shadow + hatching), a thick ink contour and a baked contact shadow.
+// per face (lit / mid / shadow + hatching) and a thick ink contour, then cut out with a cream rim
+// and a contact shadow so no item ever sinks into the belt under it.
 
 import Phaser from 'phaser';
 import { ITEMS, type ItemId } from '../sim/defs';
@@ -12,8 +13,8 @@ import { INK, ITEM_LOOK, PALETTE, canvas, css, type Ctx } from './textures';
  * Art is designed in a 36-unit box.
  */
 export const ITEM_TEX = 64;
-/** Display size of an item riding a belt, in world pixels. */
-export const ITEM_BELT_PX = 42;
+/** Display size of an item riding a belt, in world pixels (the bed between the rails is 40). */
+export const ITEM_BELT_PX = 48;
 /** Scale that shows an item at its belt size. */
 export const ITEM_BELT = ITEM_BELT_PX / ITEM_TEX;
 /** Scale matching the old 28px item box, for icons and machine readouts. */
@@ -68,16 +69,6 @@ function line(ctx: Ctx, pts: P, style: string, w: number) {
   ctx.stroke();
 }
 
-function shadow(ctx: Ctx, draw: () => void) {
-  ctx.save();
-  ctx.translate(1.4, 2.4);
-  ctx.globalAlpha = 0.42;
-  ctx.fillStyle = 'rgb(14,8,6)';
-  draw();
-  ctx.fill();
-  ctx.restore();
-}
-
 function glint(ctx: Ctx, x: number, y: number, r: number) {
   ctx.fillStyle = 'rgba(255,255,255,0.95)';
   ctx.beginPath();
@@ -95,7 +86,6 @@ function glint(ctx: Ctx, x: number, y: number, r: number) {
 
 /** A faceted lump: silhouette plus facets as [points, tone] with tone in -1..1 (lit > 0). */
 function lump(ctx: Ctx, base: number, outline: P, facets: [P, number][]) {
-  shadow(ctx, () => path(ctx, outline));
   for (const [pts, t] of facets) {
     fill(ctx, pts, css(base, t > 0 ? t * 0.45 : t * 0.5));
     if (t < -0.3) hatch(ctx, pts, 0.45);
@@ -138,7 +128,9 @@ function ferriteOre(ctx: Ctx) {
 }
 
 function carbon(ctx: Ctx) {
-  const c = 0x48425c;
+  // Smelter fuel: a black coke lump split by glowing ember seams, so it reads as "hot fuel" even
+  // as a speck on a dark belt.
+  const c = ITEM_LOOK.carbon;
   const A: [number, number] = [12, 15];
   const B: [number, number] = [20, 12];
   const C: [number, number] = [25, 19];
@@ -151,15 +143,22 @@ function carbon(ctx: Ctx) {
     [[[6, 17], [10, 9], A, E, [15, 30], [7, 25]], -0.1],
     [[E, C, [26, 28], [15, 30]], -0.6],
   ]);
-  // Glassy anthracite sheen: sharp cool highlights on the lit facets.
-  ctx.fillStyle = 'rgba(200,196,236,0.9)';
+  // Ember seams: ink crack, orange glow, white-hot core.
+  const seams: P[] = [
+    [[8.5, 21], [12, 19.5], [14, 22.5], [17.5, 21], [19.5, 25], [23, 24.5]],
+    [[21, 12.5], [22.5, 16], [26.5, 16.5], [29, 20]],
+    [[13, 26], [16.5, 27.5]],
+  ];
+  for (const pts of seams) line(ctx, pts, 'rgba(255,90,20,0.35)', 4.2);
+  for (const pts of seams) line(ctx, pts, INK, 2.6);
+  for (const pts of seams) line(ctx, pts, '#ff7a1c', 1.5);
+  for (const pts of seams) line(ctx, pts, '#ffe27a', 0.6);
+  // Glassy sheen on the lit facets.
+  ctx.fillStyle = 'rgba(214,206,244,0.9)';
   path(ctx, [[12, 10], [17, 8], [14, 12]]);
   ctx.fill();
   path(ctx, [[20, 9], [25, 10], [21, 11]]);
   ctx.fill();
-  line(ctx, [[14, 17], [20, 15]], 'rgba(200,196,236,0.6)', 0.9);
-  // Cool rim light along the lit contour so the dark lump still separates from a dark belt.
-  line(ctx, [[7.6, 24], [7.4, 17.2], [10.8, 10], [18, 7.3], [25.5, 9.6]], 'rgba(176,170,228,0.85)', 1.2);
   glint(ctx, 14, 9, 2.4);
 }
 
@@ -177,7 +176,6 @@ function crystal(ctx: Ctx, x: number, y: number, len: number, ang: number, w: nu
   const mid0: [number, number] = [x, y];
   const mid1 = sh;
   const outline: P = [l0, l1, tip, r1, r0];
-  shadow(ctx, () => path(ctx, outline));
   // The face whose normal points toward the top-left light is lit.
   const litLeft = nx * -0.6 + ny * -0.8 > 0;
   fill(ctx, [l0, l1, tip, mid1, mid0], css(base, litLeft ? 0.45 : -0.3));
@@ -216,7 +214,6 @@ function silica(ctx: Ctx) {
   const c = ITEM_LOOK.silica;
   // Pale quartz prisms fanned out of a small pebble: no rock body, all crystal.
   const peb: P = [[9, 27], [14, 24], [22, 24], [28, 27], [24, 31], [13, 31]];
-  shadow(ctx, () => path(ctx, peb));
   fill(ctx, peb, css(0xd8c8a8, -0.1));
   hatch(ctx, [[18, 27], [28, 27], [24, 31], [16, 31]], 0.4);
   ink(ctx, peb, 2.5);
@@ -231,7 +228,6 @@ function ingot(ctx: Ctx, c: number) {
   const front: P = [[8, 17], [27, 17], [28, 27], [5, 27]];
   const end: P = [[25, 9], [31, 21], [31, 26], [28, 27], [27, 17]];
   const outline: P = [[10, 9], [25, 9], [31, 21], [31, 26], [28, 27], [5, 27], [8, 17]];
-  shadow(ctx, () => path(ctx, outline));
   fill(ctx, top, css(c, 0.35));
   fill(ctx, front, css(c, -0.08));
   fill(ctx, end, css(c, -0.5));
@@ -259,11 +255,6 @@ function glass(ctx: Ctx) {
   const face: P = [[7, 10], [26, 6], [30, 23], [11, 28]];
   const edge: P = [[30, 23], [30, 26.5], [11, 31.5], [11, 28]];
   const outline: P = [[7, 10], [26, 6], [30, 23], [30, 26.5], [11, 31.5], [7, 13.5]];
-  // Faint shadow: light passes through the pane.
-  ctx.save();
-  ctx.globalAlpha = 0.55;
-  shadow(ctx, () => path(ctx, outline));
-  ctx.restore();
   fill(ctx, [[7, 10], [11, 28], [11, 31.5], [7, 13.5]], css(c, -0.2, 0.9));
   fill(ctx, edge, css(c, -0.35, 0.95));
   hatch(ctx, edge, 0.35, 1.8);
@@ -297,7 +288,6 @@ function gear(ctx: Ctx) {
     ] as const)
       pts.push([18 + Math.cos(a + da * t) * r, 18 + Math.sin(a + da * t) * r]);
   }
-  shadow(ctx, () => path(ctx, pts));
   // Cel: shadow tone with hatching, then the lit body shifted toward the light.
   fill(ctx, pts, css(c, -0.42));
   hatch(ctx, pts, 0.55);
@@ -355,10 +345,6 @@ function wire(ctx: Ctx) {
     ctx.beginPath();
     ctx.ellipse(x, 18, 4.6, 12.5, 0, 0, Math.PI * 2);
   };
-  shadow(ctx, () => {
-    ctx.beginPath();
-    ctx.roundRect(5, 5.5, 27, 25, 5);
-  });
   flange(27);
   ctx.fillStyle = css(PALETTE.hazard, -0.45);
   ctx.fill();
@@ -419,7 +405,6 @@ function circuit(ctx: Ctx) {
   const top: P = [[5, 7], [31, 7], [31, 25], [5, 25]];
   const side: P = [[5, 25], [31, 25], [31, 29], [5, 29]];
   const outline: P = [[5, 7], [31, 7], [31, 29], [5, 29]];
-  shadow(ctx, () => path(ctx, outline));
   fill(ctx, top, css(c, -0.05));
   fill(ctx, side, css(c, -0.55));
   hatch(ctx, side, 0.5, 1.8);
@@ -495,13 +480,55 @@ const ART: Record<ItemId, (ctx: Ctx) => void> = {
   circuit,
 };
 
+/** Light rim that lifts every item off the dark belt rubber, in art units. */
+const RIM = 1.7;
+const RIM_COLOR = '#fff1cc';
+/** Thin ink line around the rim so it also holds on pale ground and panels. */
+const RIM_INK = 0.8;
+
+/** The art's silhouette grown by `r` art units, filled with `color`. */
+function grown(art: HTMLCanvasElement, r: number, color: string): HTMLCanvasElement {
+  const k = ITEM_TEX / 36;
+  const c = document.createElement('canvas');
+  c.width = c.height = ITEM_TEX;
+  const x = c.getContext('2d')!;
+  const steps = 24;
+  for (const rr of [r * 0.5, r]) {
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      x.drawImage(art, Math.cos(a) * rr * k, Math.sin(a) * rr * k);
+    }
+  }
+  x.globalCompositeOperation = 'source-in';
+  x.fillStyle = color;
+  x.fillRect(0, 0, ITEM_TEX, ITEM_TEX);
+  return c;
+}
+
 export function makeItems(scene: Phaser.Scene) {
+  const k = ITEM_TEX / 36;
   for (const id of Object.keys(ITEMS) as ItemId[]) {
+    const art = document.createElement('canvas');
+    art.width = art.height = ITEM_TEX;
+    const a = art.getContext('2d')!;
+    a.scale(k, k);
+    ART[id](a);
     const [ctx, tex] = canvas(scene, `item-${id}`, ITEM_TEX, ITEM_TEX);
+    // Contact shadow down-right, then ink and cream rings, then the art: a sticker-like cut-out
+    // that separates from belt rubber, orange ground and cream panels alike.
+    const outer = grown(art, RIM + RIM_INK, INK);
     ctx.save();
-    ctx.scale(ITEM_TEX / 36, ITEM_TEX / 36);
-    ART[id](ctx);
+    ctx.globalAlpha = id === 'glass' ? 0.3 : 0.45;
+    ctx.drawImage(outer, 1.2 * k, 2.2 * k);
     ctx.restore();
+    ctx.drawImage(outer, 0, 0);
+    ctx.drawImage(grown(art, RIM, RIM_COLOR), 0, 0);
+    // See-through goods keep the belt visible through them: clear the rim under the art.
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.drawImage(art, 0, 0);
+    ctx.restore();
+    ctx.drawImage(art, 0, 0);
     tex.refresh();
     mipmap(scene, tex);
   }
