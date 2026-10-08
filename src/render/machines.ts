@@ -6,6 +6,7 @@
 
 import Phaser from 'phaser';
 import { CHEST_CAPACITY, type ItemId } from '../sim/defs';
+import type { Severity } from '../sim/status';
 import { DX, DY, type Entity, type World } from '../sim/world';
 import { mulberry32 } from '../sim/rng';
 import { ITEM_BELT, ITEM_SHADOW, ITEM_SIZE, ITEM_UNIT, shadowAlpha } from './items';
@@ -2570,6 +2571,15 @@ export interface MachineHost {
   fx: Fx;
   /** Where a grabber's freshly taken item was last drawn (by grabber id), so the claw can pull it in. */
   handoff?: Map<number, { x: number; y: number }>;
+  /** Severity of the status sign shown over a machine, if any. */
+  status?: (id: number) => Severity | undefined;
+}
+
+/** Status lamp: green while working, a hard red blink when stopped for good, an amber breath while waiting. */
+function statusLamp(l: Lamp, h: MachineHost, id: number, working: boolean, time: number) {
+  if (working) return setLamp(l, LAMP_GO, 1);
+  if (h.status?.(id) === 'bad') return setLamp(l, LAMP_OFF, Math.sin(time / 120) > -0.2 ? 1 : 0.1);
+  setLamp(l, LAMP_WAIT, 0.5 + 0.5 * Math.sin(time / 260));
 }
 
 /** Where a grabber's claw holds goods at rest over its pick-up (`side` -1) or drop (`side` 1) tile. */
@@ -2707,7 +2717,7 @@ function drillView(h: MachineHost, e: Entity): View {
       heat.setAlpha(spin * (0.35 + 0.15 * Math.sin(time * 0.02)) + kick * 0.3);
       const [px, py, pa] = chutePos(h, m);
       chute.setPosition(px, py).setAngle(pa).setScale(1 + kick * 0.18, 1 + kick * 0.1);
-      setLamp(lamp, m.active ? LAMP_GO : LAMP_WAIT, m.active ? 1 : 0.5 + 0.5 * Math.sin(time / 260));
+      statusLamp(lamp, h, m.id, m.active, time);
       if (m.active && time > nextDust) {
         // Dust boiling out of the bore, alternating sides, rolling outward and up over the flange.
         nextDust = time + 90 + Math.random() * 50;
@@ -2785,7 +2795,7 @@ function smelterView(h: MachineHost, e: Entity): View {
       slitGlow.setAlpha(heat * flick * 0.6);
       ground.setAlpha(heat * flick * 0.28);
       needle.setRotation(-2.3 + heat * 3.6 + (f.active ? Math.sin(time / 90) * 0.06 : 0));
-      setLamp(lamp, f.active ? LAMP_GO : LAMP_WAIT, f.active ? 1 : 0.5 + 0.5 * Math.sin(time / 260));
+      statusLamp(lamp, h, f.id, f.active, time);
       if (heat > 0.2 && time > nextEmber) {
         nextEmber = time + 90 + Math.random() * 120 / heat;
         const a = Math.random() * Math.PI * 2;
@@ -2957,7 +2967,7 @@ function fabricatorView(h: MachineHost, e: Entity): View {
       screen.setAlpha(0.3 + Math.sin(time / 140) * 0.05 + (a.crafting ? 0.12 : 0));
       icon.setVisible(!!a.recipe);
       if (a.recipe && icon.texture.key !== `icon-${a.recipe.output}`) icon.setTexture(`icon-${a.recipe.output}`);
-      setLamp(lamp, a.crafting ? LAMP_GO : LAMP_WAIT, a.crafting ? 1 : 0.5 + 0.5 * Math.sin(time / 260));
+      statusLamp(lamp, h, a.id, a.crafting, time);
       prevP = a.crafting ? p : 0;
       wasCrafting = a.crafting;
     },

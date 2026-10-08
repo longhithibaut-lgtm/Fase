@@ -9,6 +9,8 @@ import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, 
 import { BELT_ATLAS, CARGO_PAINT, FEED_SHIFT, IDLE_PAINT, SIM_STEP, beltClock, beltShapeKey, makeBelts } from './belts';
 import { ItemFlow } from './flow';
 import { makeItems } from './items';
+import { GoalGauge, makeGoalArt } from './goal';
+import { StatusBoard, makeStatusArt } from './status';
 import { TILE, makeShared } from './textures';
 
 const STEP = SIM_STEP;
@@ -50,6 +52,8 @@ export class FactoryScene extends Phaser.Scene {
   private acidTiles: [number, number][] = [];
   private nextBubble = 0;
   fx!: Fx;
+  status!: StatusBoard;
+  private goal!: GoalGauge;
 
   constructor(private getCampaign: () => Campaign) {
     super('factory');
@@ -66,6 +70,10 @@ export class FactoryScene extends Phaser.Scene {
     makeBelts(this);
     makeMachines(this);
     this.fx = new Fx(this);
+    makeStatusArt(this);
+    this.status = new StatusBoard(this, this.fx);
+    makeGoalArt(this);
+    this.goal = new GoalGauge(this);
     makeBuildArt(this);
     this.juice = new BuildJuice(this, this.fx);
     this.flow = new ItemFlow(this, (b, pos, c) => this.beltItemPos(b, pos, c));
@@ -112,6 +120,7 @@ export class FactoryScene extends Phaser.Scene {
     this.views.clear();
     this.removedAt.clear();
     this.juice.reset();
+    this.status.reset();
     this.siteLayer.forEach((o) => o.destroy());
     this.siteLayer = [];
     this.select(null);
@@ -291,6 +300,14 @@ export class FactoryScene extends Phaser.Scene {
     this.hud?.refreshToolbar();
   }
 
+  /** Inspect a machine and glide the camera over to it (from the HUD's trouble strip). */
+  focus(e: Entity) {
+    this.setTool(null);
+    this.select(e);
+    const cam = this.cameras.main;
+    cam.pan((e.x + e.size / 2) * TILE, (e.y + e.size / 2) * TILE, 420, 'Sine.easeInOut');
+  }
+
   select(e: Entity | null) {
     this.selected = e;
     this.hud?.showEntity(e);
@@ -312,6 +329,8 @@ export class FactoryScene extends Phaser.Scene {
     this.fx.update(this.game.loop.delta / 1000);
     // Goods first: a grabber's view reads the hand-off the flow records this frame.
     this.flow.update(this.world, this.game.loop.delta / 1000);
+    this.status.update(this.world, time, this.cameras.main.zoom);
+    this.goal.update(this.world, time, this.cameras.main.zoom);
     this.syncEntities(time);
     this.drawCable(time);
     this.bubbleAcid(time);
@@ -499,7 +518,7 @@ export class FactoryScene extends Phaser.Scene {
         };
       }
       default:
-        return machineView({ scene: this, world: this.world, fx: this.fx, handoff: this.flow.handoff }, e)!;
+        return machineView({ scene: this, world: this.world, fx: this.fx, handoff: this.flow.handoff, status: (id) => this.status.shownOf(id) }, e)!;
     }
   }
 

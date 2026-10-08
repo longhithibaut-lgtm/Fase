@@ -3,7 +3,8 @@ import { Campaign } from '../src/sim/campaign';
 import type { OreId } from '../src/sim/defs';
 import { buildDemo, playDemos } from '../src/sim/demos';
 import { LEVELS } from '../src/sim/levels';
-import { World, type Belt, type Chest, type Dir, type Entity } from '../src/sim/world';
+import { diagnose } from '../src/sim/status';
+import { World, type Assembler, type Belt, type Chest, type Dir, type Entity, type Furnace, type Miner } from '../src/sim/world';
 
 const DT = 1 / 60;
 
@@ -137,5 +138,56 @@ describe('persistence', () => {
     expect(copy.world.entities.size).toBe(c.world.entities.size);
     expect(copy.world.entityAt(4, 3)?.kind).toBe('belt');
     run(copy, 5);
+  });
+});
+
+describe('machine status', () => {
+  it('tells a smelter out of fuel from one waiting for ore', () => {
+    const w = new World(20, 20);
+    const f = must<Furnace>(w.place('furnace', 5, 5));
+    expect(diagnose(w, f).kind).toBe('no-fuel');
+    f.fuel = 3;
+    expect(diagnose(w, f)).toMatchObject({ kind: 'no-input', severity: 'warn' });
+    f.input = 'ferrite-ore';
+    f.inputCount = 2;
+    w.update(DT);
+    expect(diagnose(w, f).kind).toBe('working');
+    f.recipe = null;
+    f.active = false;
+    f.output = 'ferrite-bar';
+    f.outputCount = 20;
+    expect(diagnose(w, f)).toMatchObject({ kind: 'output-full', severity: 'bad', item: 'ferrite-bar' });
+  });
+
+  it('flags a fabricator fed goods its recipe does not use', () => {
+    const w = new World(20, 20);
+    const a = must<Assembler>(w.place('assembler', 5, 5));
+    must(w.place('inserter', 4, 6, 1));
+    const b = must<Belt>(w.place('belt', 3, 6, 0));
+    expect(diagnose(w, a)).toMatchObject({ kind: 'no-input', item: 'ferrite-bar' });
+    b.items.push({ item: 'cuprite-bar', pos: 0.9, tick: 0 });
+    expect(diagnose(w, a)).toMatchObject({ kind: 'wrong-recipe', item: 'cuprite-bar' });
+    w.setRecipe(5, 5, 'wire');
+    expect(diagnose(w, a).kind).toBe('no-input');
+  });
+
+  it('reports a drill off the ore and a blocked drill', () => {
+    const w = new World(20, 20);
+    ore(w, 0, 0, 'ferrite-ore', 1);
+    const m = must<Miner>(w.place('miner', 0, 0, 1));
+    run(w, 3);
+    expect(diagnose(w, m)).toMatchObject({ kind: 'output-full', item: 'ferrite-ore' });
+    m.out = null;
+    run(w, 0.1);
+    expect(diagnose(w, m).kind).toBe('no-ore');
+  });
+
+  it('tells a drill backed up behind a full belt from one dropping onto nothing', () => {
+    const w = new World(20, 20);
+    ore(w, 0, 0, 'carbon');
+    const m = must<Miner>(w.place('miner', 0, 0, 1));
+    line(w, 2, 0, 1, 2);
+    run(w, 40);
+    expect(diagnose(w, m)).toMatchObject({ kind: 'backed-up', severity: 'warn', item: 'carbon' });
   });
 });

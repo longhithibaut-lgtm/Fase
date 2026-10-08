@@ -12,9 +12,11 @@ import '@fontsource/barlow-condensed/latin-700.css';
 import type Phaser from 'phaser';
 import { ASSEMBLY, BUILD_ORDER, BUILDINGS, ITEMS, MACHINE_BUFFER, type BuildingKind, type ItemId } from '../sim/defs';
 import type { Campaign } from '../sim/campaign';
+import { diagnose, type Diagnosis } from '../sim/status';
 import type { Entity } from '../sim/world';
 import type { FactoryScene } from './FactoryScene';
 import { GLYPH, frame, grime, starburst } from './hudArt';
+import { statusLook } from './status';
 
 const TOOL_TIPS: Record<BuildingKind, string> = {
   belt: 'Carries goods. Drag to lay a line.',
@@ -64,6 +66,7 @@ const CSS = `
 #site .meter{position:relative;height:24px;margin:6px 0 2px;border:3px solid var(--ink);border-radius:3px;background:repeating-linear-gradient(-45deg,#2c2030 0 5px,#382a3d 5px 7px);box-shadow:0 3px 0 rgba(26,18,20,.45)}
 #site .meter .fill{position:absolute;inset:0 auto 0 0;width:0;transition:width .45s cubic-bezier(.3,.8,.4,1);background:repeating-linear-gradient(-45deg,var(--hazard) 0 9px,#f9d364 9px 13px,var(--hazard2) 13px 18px) 0 0/25.46px 25.46px;border-right:3px solid var(--ink);animation:crawl 1.2s linear infinite;box-shadow:inset 0 4px 0 rgba(255,246,210,.45),inset 0 -5px 0 rgba(120,60,0,.35)}
 #site .meter .fill[style*="width: 0"]{border-right:0}
+#site .meter.kick .fill{animation:crawl 1.2s linear infinite,kick .45s ease-out}
 #site .meter.done .fill{background:repeating-linear-gradient(-45deg,var(--ok) 0 9px,#b6ea76 9px 13px,#6fb63a 13px 18px) 0 0/25.46px 25.46px}
 #site .meter .notch{position:absolute;top:-9px;bottom:-9px;width:5px;margin-left:-2.5px;background:var(--ink);border-radius:1px}
 #site .meter .notch::after{content:"";position:absolute;left:50%;top:-1px;width:12px;height:9px;background:var(--bad);border:2px solid var(--ink);transform:translateX(-1px);clip-path:polygon(0 0,100% 50%,0 100%)}
@@ -76,6 +79,24 @@ const CSS = `
 #site .cost svg{width:16px;height:16px}
 #site .cost b{color:var(--ink)}
 #site.celebrate{animation:shake .5s ease-out}
+
+/* trouble strip: stuck machines, worst first, under the goal */
+#alerts{position:absolute;left:16px;top:230px;display:flex;flex-direction:column;align-items:flex-start;gap:5px}
+#alerts:empty{display:none}
+#alerts button{pointer-events:auto;position:relative;display:flex;align-items:center;gap:6px;height:30px;padding:0 11px 0 3px;border:0;background:var(--ink);color:var(--paper);cursor:pointer;clip-path:polygon(0 0,100% 0,calc(100% - 7px) 100%,0 100%);box-shadow:inset 0 0 0 2px var(--c);font:400 16px/1 var(--disp);letter-spacing:.05em;white-space:nowrap;animation:slideIn .25s cubic-bezier(.3,1.4,.5,1);transition:transform .12s}
+#alerts button:hover{transform:translateX(3px)}
+#alerts button.bad{--c:#e8361f}
+#alerts button.warn{--c:#f6bd2c}
+#alerts button.wrong{--c:#9b52e0}
+#alerts button.bad .sg{animation:blink .8s steps(2) infinite}
+#alerts .sg{position:relative;width:24px;height:26px;flex:none}
+#alerts .sg img{position:absolute;display:block}
+#alerts .sg .pl{inset:0;width:24px;height:26px}
+#alerts .sg .it{left:6px;top:5.5px;width:12px;height:12px}
+#alerts .what{display:grid;gap:1px;text-align:left}
+#alerts .what small{font:700 10px/1 var(--body);letter-spacing:.1em;text-transform:uppercase;color:#bfa98a}
+#alerts .more{font:700 12px/1 var(--body);letter-spacing:.08em;text-transform:uppercase;color:var(--paper);background:rgba(26,18,20,.8);padding:3px 7px 2px;border-radius:2px}
+#alerts .n{font-size:14px;color:var(--c);margin-left:2px}
 
 /* credits */
 #credits{left:50%;top:10px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;padding:0 6px 0 2px}
@@ -147,6 +168,8 @@ const CSS = `
 #panel .flow .to{width:26px;height:22px;flex:none}
 #panel .slot{position:relative;flex:none}
 #panel .slot .sock{width:46px;height:46px}
+#panel .slot.want .sock{box-shadow:0 0 0 3px var(--hazard),0 0 0 5px var(--ink);animation:beckon .9s ease-in-out infinite}
+#panel .slot.want.bad .sock{box-shadow:0 0 0 3px var(--bad),0 0 0 5px var(--ink)}
 #panel .slot.empty .sock img{filter:brightness(0) opacity(.3)}
 #panel .slot b{position:absolute;right:-6px;bottom:-5px;min-width:22px;padding:1px 4px 0;font:400 16px/1.05 var(--disp);letter-spacing:.03em;text-align:center;background:var(--paper);border:2px solid var(--ink);border-radius:3px;font-variant-numeric:tabular-nums}
 #panel .slot b.full{background:var(--bad);color:#fff}
@@ -210,6 +233,7 @@ const CSS = `
 #burst.out .flash,#burst.out .rays{animation:fadeOut .35s forwards}
 
 @keyframes crawl{to{background-position:25.46px 0}}
+@keyframes kick{0%{filter:brightness(1.7) saturate(1.3)}100%{filter:none}}
 @keyframes stampIn{0%{transform:scale(2.2) rotate(-14deg);opacity:0}100%{transform:scale(1) rotate(-5deg);opacity:1}}
 @keyframes pop{40%{transform:scale(1.18)}}
 @keyframes fly{0%{opacity:0;transform:translate(-50%,-4px) scale(.6)}15%{opacity:1;transform:translate(-50%,6px) scale(1.15)}100%{opacity:0;transform:translate(-50%,34px) scale(1)}}
@@ -281,6 +305,11 @@ export class Hud {
   private orders: HTMLElement;
   private orderList: HTMLElement;
   private burst: HTMLElement;
+  private alertsBox: HTMLElement;
+  private alertsSig = '';
+  private shipped = -1;
+  /** Which machine of each alert group a click last jumped to. */
+  private alertTurn = new Map<string, number>();
   private icons = new Map<string, string>();
   private lastPanel = 0;
   private lastSite = 0;
@@ -305,6 +334,7 @@ export class Hud {
     this.paintArt();
     this.root.innerHTML = `
       <section id="site" class="pnl box"></section>
+      <div id="alerts"></div>
       <div id="credits" class="pnl hz box"><span class="coin">${GLYPH.coin}</span><b class="num">0</b><small>station credits</small><div id="flyers"></div></div>
       <section id="sites" class="pnl box"><span class="tag">Planet route</span><div class="route"></div></section>
       <section id="panel" class="pnl box"></section>
@@ -329,6 +359,7 @@ export class Hud {
     this.orders = $('#orders');
     this.orderList = $('#orders .list');
     this.burst = $('#burst');
+    this.alertsBox = $('#alerts');
     this.shownCredits = this.lastCredits = Math.floor(scene.campaign.credits);
     this.credits.textContent = this.fmt(this.shownCredits);
     this.buildToolbar();
@@ -545,6 +576,7 @@ export class Hud {
     if (key !== this.siteKey) {
       this.buildSite();
       this.siteKey = key;
+      this.shipped = -1;
     }
     const w = c.world;
     const l = c.level(c.current);
@@ -560,10 +592,64 @@ export class Hud {
       stamp.className = `stamp ${done ? 'done' : 'goal-s'}`;
     }
     q('.meter').classList.toggle('done', meetsGoal);
+    // Each shipment that reaches the elevator kicks the meter, in step with the gauge on the pad.
+    const shipped = w.exportedTotal[l.product] ?? 0;
+    if (this.shipped >= 0 && shipped > this.shipped) {
+      const m = q('.meter');
+      m.classList.remove('kick');
+      void m.offsetWidth;
+      m.classList.add('kick');
+    }
+    this.shipped = shipped;
     q('.fill').style.width = `${fill.toFixed(1)}%`;
     q('.rate').classList.toggle('done', meetsGoal);
     q('.rate b').textContent = rate.toFixed(1);
     q('.cost b').textContent = String(w.cost());
+  }
+
+  // ---------- trouble strip ----------
+
+  /** Stuck machines grouped by problem, worst first; a click jumps to the next one in the group. */
+  private renderAlerts() {
+    const groups = new Map<string, { d: Diagnosis; kind: BuildingKind; ids: number[] }>();
+    for (const { e, d } of this.scene.status.alerts()) {
+      const k = `${d.kind}|${d.item ?? ''}|${e.kind}`;
+      const g = groups.get(k);
+      if (g) g.ids.push(e.id);
+      else groups.set(k, { d, kind: e.kind, ids: [e.id] });
+    }
+    const all = [...groups.entries()];
+    const list = all.slice(0, 3);
+    const more = all.slice(3).reduce((n, [, g]) => n + g.ids.length, 0);
+    const sig = list.map(([k, g]) => `${k}:${g.ids.join(',')}`).join(';') + `+${more}`;
+    // Sit right under the site card.
+    const top = this.site.offsetTop + this.site.offsetHeight + 8;
+    if (this.alertsBox.style.top !== `${top}px`) this.alertsBox.style.top = `${top}px`;
+    if (sig === this.alertsSig) return;
+    this.alertsSig = sig;
+    this.alertsBox.innerHTML = '';
+    for (const [k, g] of list) {
+      const look = statusLook(g.d, g.kind);
+      if (!look) continue;
+      const b = document.createElement('button');
+      b.className = look.plate;
+      const item = look.glyph || !g.d.item ? this.icon(`st-glyph-${look.glyph ?? 'ore'}`) : this.icon(`icon-${g.d.item}`);
+      b.innerHTML = `<span class="sg"><img class="pl" src="${this.icon(`st-plate-${look.plate}`)}" alt=""><img class="it" src="${item}" alt=""></span><span class="what">${look.caption}<small>${BUILDINGS[g.kind].name}${g.d.item && !look.glyph ? ` · ${ITEMS[g.d.item].name}` : ''}</small></span>${g.ids.length > 1 ? `<span class="n">×${g.ids.length}</span>` : ''}`;
+      b.title = g.d.text;
+      b.onclick = () => {
+        const i = ((this.alertTurn.get(k) ?? -1) + 1) % g.ids.length;
+        this.alertTurn.set(k, i);
+        const e = this.scene.world.entities.get(g.ids[i]);
+        if (e) this.scene.focus(e);
+      };
+      this.alertsBox.appendChild(b);
+    }
+    if (more) {
+      const m = document.createElement('span');
+      m.className = 'more';
+      m.textContent = `+${more} more stuck`;
+      this.alertsBox.appendChild(m);
+    }
   }
 
   // ---------- credits ----------
@@ -614,14 +700,12 @@ export class Hud {
   }
 
   /** Structure (rebuilt only when `sig` changes) plus the live values patched into it. */
-  private panelModel(e: Entity): { sig: string; html: string; vals: Record<string, string>; bars: Record<string, number>; status: string } {
+  private panelModel(e: Entity): { sig: string; html: string; vals: Record<string, string>; bars: Record<string, number>; status: string; want: string | null; bad: boolean } {
     const w = this.scene.world;
     const vals: Record<string, string> = {};
     const bars: Record<string, number> = {};
     let sig: string = e.kind;
     let html = '';
-    let status = '';
-    const full = (n: number) => n >= MACHINE_BUFFER;
     switch (e.kind) {
       case 'furnace': {
         const out = e.output ?? e.recipe?.output ?? null;
@@ -631,15 +715,6 @@ export class Hud {
         vals.fuel = String(e.fuel);
         vals.out = String(e.outputCount);
         bars.p = e.progress;
-        status = e.active
-          ? this.status('ok', `Smelting ${ITEMS[e.recipe!.output].name.toLowerCase()}`)
-          : full(e.outputCount)
-            ? this.status('bad', 'Output full · add a grabber')
-            : !e.input
-              ? this.status('warn', 'Waiting for ore')
-              : e.fuel === 0 && e.fuelOps === 0
-                ? this.status('bad', 'Out of carbon fuel')
-                : this.status('idle', 'Idle');
         break;
       }
       case 'assembler': {
@@ -660,15 +735,7 @@ export class Hud {
           html += `<span class="to">${GLYPH.arrow}</span>${this.slot(r.output, 'out', { need: r.count > 1 ? r.count : undefined })}</div><div class="prog"><i data-b="p"></i></div>`;
           vals.out = String(e.outputCount);
           bars.p = e.progress;
-          const missing = ins.find(([k, n]) => (e.inputs[k] ?? 0) < n);
-          status = e.crafting
-            ? this.status('ok', `Fabricating ${ITEMS[r.output].name.toLowerCase()}`)
-            : full(e.outputCount)
-              ? this.status('bad', 'Output full · add a grabber')
-              : missing
-                ? this.status('warn', `Needs ${ITEMS[missing[0]].name.toLowerCase()}`)
-                : this.status('idle', 'Idle');
-        } else status = this.status('warn', 'Pick a recipe');
+        }
         break;
       }
       case 'miner': {
@@ -686,7 +753,6 @@ export class Hud {
         html = `<div class="flow">${this.slot(ore, null)}<div class="big"><b data-v="left">0</b><span class="lbl">ore left</span></div></div><div class="prog"><i data-b="p"></i></div>`;
         vals.left = this.fmt(left);
         bars.p = e.progress;
-        status = e.active ? this.status('ok', `Drilling ${ore ? ITEMS[ore].name.toLowerCase() : ''}`) : e.out ? this.status('bad', 'Output blocked') : this.status('bad', 'No ore under the drill');
         break;
       }
       case 'elevator': {
@@ -694,21 +760,18 @@ export class Hud {
         html = `<div class="flow">${this.slot(l.product, 'sent')}<div class="big"><b data-v="rate">0</b><span class="lbl">per min to orbit</span></div></div>`;
         vals.sent = this.fmt(e.received);
         vals.rate = w.rate().toFixed(1);
-        status = e.received ? this.status('ok', 'Lifting goods to the station') : this.status('warn', `Waiting for ${ITEMS[l.product].name.toLowerCase()}`);
         break;
       }
       case 'importer':
         sig += `|${e.item}`;
         html = `<div class="flow">${this.slot(e.item, 'n')}<div class="big"><b>${e.perMinute}</b><span class="lbl">per min</span></div></div>`;
         vals.n = e.out ? '1' : '0';
-        status = e.active ? this.status('ok', 'Receiving cargo') : this.status('warn', 'Waiting for the source site to be automated');
         break;
       case 'chest': {
         const items = (Object.entries(e.items) as [ItemId, number][]).filter(([, n]) => n > 0);
         sig += `|${items.map(([k]) => k).join(',')}`;
         html = items.length ? `<div class="grid">${items.map(([k]) => this.slot(k, `c-${k}`)).join('')}</div>` : '<div class="note">Empty. Grabbers fill and empty crates.</div>';
         for (const [k, n] of items) vals[`c-${k}`] = String(n);
-        status = items.length ? this.status('ok', 'Storing goods') : this.status('idle', 'Empty');
         break;
       }
       case 'belt': {
@@ -718,17 +781,23 @@ export class Hud {
         sig += `|${keys.join(',')}`;
         html = keys.length ? `<div class="grid">${keys.map((k) => this.slot(k, `b-${k}`)).join('')}</div>` : '<div class="note">Nothing on this stretch.</div>';
         for (const k of keys) vals[`b-${k}`] = String(counts[k]);
-        status = keys.length ? this.status('ok', 'Carrying goods') : this.status('idle', 'Empty');
         break;
       }
       case 'inserter':
         sig += `|${e.held}`;
         html = `<div class="flow">${this.slot(e.held, 'h')}<div class="note">${e.held ? 'In the claw' : 'Claw empty'}</div></div>`;
         vals.h = e.held ? '1' : '0';
-        status = e.held ? this.status('ok', `Moving ${ITEMS[e.held].name.toLowerCase()}`) : this.status('idle', 'Waiting for goods');
         break;
     }
-    return { sig, html, vals, bars, status };
+    const d = diagnose(w, e);
+    const status = this.status(d.severity, d.text);
+    // The slot behind the problem, flagged in the flow diagram.
+    const want =
+      d.kind === 'no-fuel' ? 'fuel'
+      : d.kind === 'output-full' || d.kind === 'backed-up' ? (e.kind === 'furnace' || e.kind === 'assembler' ? 'out' : null)
+      : d.kind === 'no-input' ? (e.kind === 'furnace' ? 'in' : e.kind === 'assembler' && d.item ? `in-${d.item}` : null)
+      : null;
+    return { sig, html, vals, bars, status, want, bad: d.severity === 'bad' };
   }
 
   private renderPanel(e: Entity) {
@@ -754,6 +823,11 @@ export class Hud {
     }
     const st = this.panel.querySelector('.status') as HTMLElement;
     if (st.innerHTML !== m.status) st.innerHTML = m.status;
+    this.panel.querySelectorAll('.slot').forEach((el) => {
+      const v = el.querySelector('b[data-v]')?.getAttribute('data-v');
+      el.classList.toggle('want', !!v && v === m.want);
+      el.classList.toggle('bad', !!v && v === m.want && m.bad);
+    });
     for (const [k, v] of Object.entries(m.vals)) {
       const el = this.panel.querySelector(`[data-v="${k}"]`);
       if (!el) continue;
@@ -806,6 +880,7 @@ export class Hud {
     this.updateCredits(time);
     if (time - this.lastSite > 250) {
       this.renderSite();
+      this.renderAlerts();
       this.renderOrders();
       this.lastSite = time;
     }
