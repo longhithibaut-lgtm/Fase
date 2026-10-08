@@ -8,7 +8,7 @@ import { BELT_GAP, BELT_SPEED, type ItemId } from '../sim/defs';
 import { SIM_STEP, SLOT, beltClock } from './belts';
 import { DX, DY, type Belt, type BeltItem, type Dir, type Inserter, type World } from '../sim/world';
 import { ITEM_BELT, ITEM_SHADOW, ITEM_SIZE, shadowAlpha } from './items';
-import { grabberGrip } from './machines';
+import { ABOVE_CLAW, grabberGrip } from './machines';
 import { TILE } from './textures';
 
 const DEPTH = 3;
@@ -134,12 +134,13 @@ export class ItemFlow {
    * Draw a good at (x, y): `lift` raises it off the belt (its shadow stays on the belt, shrinks
    * and fades), `sx`/`sy` squash it, `k` scales it as a whole (swallowed by a crate).
    */
-  private draw(s: Sprite, item: ItemId, x: number, y: number, rot: number, lift = 0, sx = 1, sy = 1, k = 1) {
+  private draw(s: Sprite, item: ItemId, x: number, y: number, rot: number, lift = 0, sx = 1, sy = 1, k = 1, depth = DEPTH) {
     const z = ITEM_SIZE[item];
-    s.img.setPosition(x, y - lift).setScale(ITEM_BELT * sx * k, ITEM_BELT * sy * k).setRotation(rot).setDepth(DEPTH + y * 1e-6 + x * 1e-9);
+    s.img.setPosition(x, y - lift).setScale(ITEM_BELT * sx * k, ITEM_BELT * sy * k).setRotation(rot).setDepth(depth + y * 1e-6 + x * 1e-9);
+    // A small contact shadow, tucked under the good's lower edge and nudged toward the lower right.
     const f = 1 - Math.min(1, lift / 30) * 0.35;
-    const w = (z.w * 0.55 + z.h * 0.45) * 1.02 * sx * k * f;
-    s.sh.setPosition(x + 1.5, y + z.h * 0.3 * k).setDisplaySize(w, w * 0.4).setAlpha(shadowAlpha(item) * f);
+    const w = (z.w * 0.6 + z.h * 0.4) * 0.96 * sx * k * f;
+    s.sh.setPosition(x + 1.2, y + z.h * 0.3 * k).setDisplaySize(w, w * 0.36).setAlpha(shadowAlpha(item) * f);
   }
 
   private reset(w: World) {
@@ -285,6 +286,14 @@ export class ItemFlow {
     }
 
     const now = this.layout(w);
+    // Tiles a grabber picks from or drops onto: goods there draw above the arm, so the claw never
+    // hides what it is about to take or has just set down.
+    const handTiles = new Set<number>();
+    for (const e of w.entities.values()) {
+      if (e.kind !== 'inserter') continue;
+      handTiles.add(tileKey(e.x - DX[e.dir], e.y - DY[e.dir]));
+      handTiles.add(tileKey(e.x + DX[e.dir], e.y + DY[e.dir]));
+    }
     // Belt travel since the last draw is measured in sim ticks, not frame time: Phaser's frame
     // delta is smoothed and clamped, and a slow frame would otherwise read as a jump.
     const ticks = this.tick < 0 ? 1 : Math.max(0, w.tick - this.tick);
@@ -419,7 +428,8 @@ export class ItemFlow {
           sy = 1 - q;
         }
       }
-      this.draw(v, v.item, v.x, v.y, v.rot, lift, sx, sy);
+      const top = handTiles.has(tileKey(Math.floor(v.x / TILE), Math.floor(v.y / TILE)));
+      this.draw(v, v.item, v.x, v.y, v.rot, lift, sx, sy, 1, top ? ABOVE_CLAW : DEPTH);
     }
     for (let i = this.ghosts.length - 1; i >= 0; i--) {
       const g = this.ghosts[i];
@@ -435,6 +445,10 @@ export class ItemFlow {
       }
     }
   }
+}
+
+function tileKey(x: number, y: number): number {
+  return (y + 1024) * 4096 + x + 1024;
 }
 
 /** Is (x, y) on or just short of the tile a grabber picks from (`side` -1) or drops onto (1)? */

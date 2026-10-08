@@ -1863,6 +1863,11 @@ const REACH = 32; // shoulder to wrist with the arm out over a pick-up or drop t
 const CLAW_OPEN = 0.74; // finger swing (radians) with the jaws open
 const CLAW_SHUT = 0.04; // finger swing with the jaws shut on nothing
 const HELD = 1; // held goods keep their belt size: every good is drawn at one size everywhere
+/**
+ * Draw depth for goods at a grabber's hand-off: above the whole claw (fingers 6.08) but under the
+ * wrist cap and shoulder, so a good being picked, carried or set down is never hidden by the arm.
+ */
+export const ABOVE_CLAW = 6.085;
 
 /**
  * Finger swing that closes the hooked tips on the sides of a good `hw` pixels in half-width, so the
@@ -3145,7 +3150,8 @@ function grabberView(h: MachineHost, e: Entity): View {
   const fore = scene.add.image(sx, sy, 'inserter-fore').setOrigin(0.5, (FORE_L + 11) / (FORE_L + 22)).setDepth(6.04);
   const elbow = scene.add.image(sx, sy, 'inserter-pivot').setDepth(6.05);
   const wrist = scene.add.image(sx, sy, 'inserter-wrist').setOrigin(0.5, 18 / 24).setDepth(6.06);
-  const held = scene.add.image(sx, sy, 'px').setDepth(6.07).setVisible(false);
+  // The held good rides above the claw's fingers: the jaws close on its edges, it is never hidden.
+  const held = scene.add.image(sx, sy, 'px').setDepth(ABOVE_CLAW).setVisible(false);
   const fingerL = scene.add.image(sx, sy, 'inserter-finger-l').setOrigin(10 / 18, 23 / 30).setDepth(6.08);
   const fingerR = scene.add.image(sx, sy, 'inserter-finger-r').setOrigin(8 / 18, 23 / 30).setDepth(6.08);
   const wristCap = scene.add.image(sx, sy, 'inserter-pivot').setDepth(6.09).setScale(0.75);

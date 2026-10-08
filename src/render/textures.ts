@@ -190,7 +190,7 @@ export const ITEM_LOOK: Record<ItemId, number> = {
   'cuprite-ore': 0x35b8a6,
   carbon: 0x3a3446,
   silica: 0xbfe6f0,
-  'ferrite-bar': 0x5f8fc4,
+  'ferrite-bar': 0x8ea7c0,
   'cuprite-bar': 0x4fd1bd,
   glass: 0xa9e4f5,
   gear: 0xe6aa2e,
