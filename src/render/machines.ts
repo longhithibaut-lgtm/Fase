@@ -3243,7 +3243,8 @@ function grabberView(h: MachineHost, e: Entity): View {
         const gx = wx + fwx * GRIP;
         const gy = wy + fwy * GRIP;
         // Only a ring: loose puffs here would read as stray goods beside the one being moved.
-        fx.spawn('fx-dustring', gx, gy + 3, { life: 0.26, s0: 0.16, s1: 0.36, a0: 0.6, a1: 0, rot: 0, depth: 5.02 });
+        // It is kicked up off the belt surface, so it spreads under the goods, never over them.
+        fx.spawn('fx-dustring', gx, gy + 3, { life: 0.26, s0: 0.16, s1: 0.36, a0: 0.6, a1: 0, rot: 0, depth: 2.94 });
       }
       // Shadows: offset to the lower right, further when the arm is lifted.
       const o1 = 3 + lift * 2;

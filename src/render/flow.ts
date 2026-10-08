@@ -6,7 +6,7 @@
 import Phaser from 'phaser';
 import { BELT_GAP, BELT_SPEED, type ItemId } from '../sim/defs';
 import { SIM_STEP, SLOT, beltClock } from './belts';
-import { DX, DY, type Belt, type BeltItem, type Dir, type Inserter, type World } from '../sim/world';
+import { DX, DY, type Belt, type BeltItem, type Dir, type Entity, type Inserter, type World } from '../sim/world';
 import { ITEM_BELT, ITEM_SHADOW, ITEM_SIZE, shadowAlpha } from './items';
 import { ABOVE_CLAW, grabberGrip } from './machines';
 import { TILE } from './textures';
@@ -28,15 +28,19 @@ const POP_HEIGHT = 12;
 /** Share of a tile kept clear in front of an end roller. */
 const END_INSET = 0.28;
 /**
- * Closest two goods are drawn, in tiles along the belt. The sim packs a stopped queue four to a
- * tile; drawn that tight the sprites smear into one column, so a queue is shown as a row of
- * separate pieces and the surplus waits out of sight until a slot opens.
+ * Closest two goods are drawn, in tiles along the belt: one slot pitch, so a standing queue reads
+ * as a packed line of separate pieces, tighter than any free-running stream. The sim packs a
+ * stopped queue four to a tile; the surplus waits out of sight until a slot opens.
  */
-const SHOW_GAP = 0.75;
+const SHOW_GAP = 0.5;
 /** Centre-line length of a corner, in tiles. */
 const CURVE_LEN = Math.PI / 4;
 /** Closest two neighbours may ever be drawn while sliding, in world pixels. */
 const MIN_DRAWN = SHOW_GAP * TILE * 0.85;
+/** Seconds a stretch of belt must hold only stopped goods before its tread stops too. */
+const STALL_DELAY = 0.2;
+/** Seconds for a jam beacon to come on or go out (hysteresis: a queue indexing forward at a grabber keeps it lit). */
+const BEACON_TIME = 0.7;
 /** Belt travel in world pixels per sim tick, plus slack: anything faster is a queue closing up. */
 const TRAVEL = BELT_SPEED * SIM_STEP * TILE * 1.6;
 
@@ -83,6 +87,16 @@ interface Seen {
   hidden: boolean;
   /** The next piece ahead of it in the queue, if any. */
   ahead: BeltItem | null;
+  /** Standing still in a queue (the sim holds it, or it is drawn closed up behind a held piece). */
+  stopped: boolean;
+}
+
+/** A belt's backed-up state, read by its view. */
+export interface Jam {
+  /** 0..1: how lit the beacon at the head of its queue is. */
+  beacon: number;
+  /** True when nothing takes goods off this end at all (a dead end or a full crate). */
+  dead: boolean;
 }
 
 /** How a belt lays out its goods on screen. */
@@ -106,6 +120,13 @@ export class ItemFlow {
   private held = new Map<number, ItemId | null>();
   private world: World | null = null;
   private settled = false;
+  /** Seconds each belt has carried nothing but a standing queue. */
+  private still = new Map<Belt, number>();
+  /** The tread frame a stopped belt is held at. */
+  private frozen = new Map<Belt, number>();
+  private jams = new Map<Belt, Jam>();
+  /** The last good seen on each belt: its run's cargo. */
+  private cargo = new Map<Belt, ItemId>();
   /** Sim tick at the last update: on a slow frame the sim runs several ticks between draws. */
   private tick = -1;
   /** Grabber id -> where its newly taken item was last drawn; read by the grabber view. */
@@ -150,6 +171,10 @@ export class ItemFlow {
     this.ghosts = [];
     this.held.clear();
     this.handoff.clear();
+    this.still.clear();
+    this.frozen.clear();
+    this.jams.clear();
+    this.cargo.clear();
     this.world = w;
     this.settled = false;
     this.tick = -1;
@@ -160,7 +185,7 @@ export class ItemFlow {
    * moving with the tread), so a stream reads as an evenly pitched product line with each good
    * covering its arrow. A stopped queue packs back from its end at a fixed gap instead.
    */
-  private layout(w: World): Seen[] {
+  private layout(w: World): { seen: Seen[]; heads: Belt[] } {
     const { slot } = beltClock(w);
     // Nearest slot to belt position u (biased off the half-way mark, where sim positions land).
     const snap = (u: number) => slot + Math.floor((u - slot) / SLOT + 0.5 + 1 / 32) * SLOT;
@@ -219,33 +244,41 @@ export class ItemFlow {
     // and that item. Goods are listed downstream first, so each one follows the piece ahead.
     const room = new Map<Belt, number>();
     const last = new Map<Belt, BeltItem | null>();
+    const lastStopped = new Map<Belt, boolean>();
     const out: Seen[] = [];
+    const heads: Belt[] = [];
     const place = (b: Belt): number => {
       const done = room.get(b);
       if (done !== undefined) return done;
       room.set(b, Infinity); // a closed loop of belts: no queue to respect around the loop
       last.set(b, null);
+      lastStopped.set(b, false);
       const L = lanes.get(b)!;
       const ahead0 = L.next ? place(L.next) : Infinity;
       let limit = L.len + ahead0 - SHOW_GAP;
       let rear = b.items.length ? L.lo * L.len : L.len + ahead0;
       let full = false;
       let ahead = L.next ? (last.get(L.next) ?? null) : null;
+      let aheadStopped = L.next ? !!lastStopped.get(L.next) : false;
       const floor = upstream(b);
       for (let i = b.items.length - 1; i >= 0; i--) {
         const it = b.items[i];
         // Riding freely this tick (same limits as the sim), or stopped in a queue?
         const simLimit = i < b.items.length - 1 ? b.items[i + 1].pos - BELT_GAP : L.next ? 1 + (L.next.items[0]?.pos ?? Infinity) - BELT_GAP : 1;
         const moving = it.pos < simLimit - 1e-6;
+        // The front of a queue with nowhere to go: the head of a backup.
+        if (!moving && i === b.items.length - 1 && !L.next) heads.push(b);
         // A riding good sits in its slot; it waits at an end roller rather than crossing it.
         let u = moving ? snap(it.pos) : it.pos;
         u = Math.min(Math.max(u, L.prev ? -0.5 : L.lo), L.next ? 1.5 : L.hi);
         let d = u * L.len;
         let grid = moving;
+        let held = !moving;
         if (d > limit) {
           // Closing up on the piece ahead: it stops a fixed gap behind it, joining the queue.
           d = limit;
           grid = false;
+          held ||= aheadStopped;
         }
         // A queue backed up past the entrance spills onto the belt feeding this one.
         if (full || d < floor) {
@@ -259,15 +292,83 @@ export class ItemFlow {
         let y: number;
         if (grid) [x, y] = at(b, L, d / L.len);
         else [x, y] = behind(b, d);
-        out.push({ it, belt: b, x, y, hidden: full, ahead });
-        if (!full) ahead = it;
+        out.push({ it, belt: b, x, y, hidden: full, ahead, stopped: held || full });
+        if (!full) {
+          ahead = it;
+          aheadStopped = held;
+        }
       }
       room.set(b, rear);
       last.set(b, ahead);
+      lastStopped.set(b, aheadStopped);
       return rear;
     };
     for (const b of lanes.keys()) place(b);
-    return out;
+    return { seen: out, heads };
+  }
+
+  /**
+   * Which tread frame belt `b` shows: the shared clock while goods ride it, held still once the
+   * stretch carries nothing but a standing queue, so a backup reads as a stopped line.
+   */
+  beltFrame(b: Belt, frame: number): number {
+    if ((this.still.get(b) ?? 0) < STALL_DELAY) {
+      this.frozen.delete(b);
+      return frame;
+    }
+    const f = this.frozen.get(b);
+    if (f !== undefined) return f;
+    this.frozen.set(b, frame);
+    return frame;
+  }
+
+  /** What belt `b` carries: the last good that rode it, if any ever did. */
+  cargoOf(b: Belt): ItemId | undefined {
+    return this.cargo.get(b);
+  }
+
+  /** The backed-up state of belt `b`, if its queue head is here. */
+  jamAt(b: Belt): Jam | undefined {
+    return this.jams.get(b);
+  }
+
+  /** Tracks which belts hold only a standing queue, and lights a beacon where each queue is stuck. */
+  private trackJams(w: World, seen: Seen[], heads: Belt[], dt: number) {
+    const tally = new Map<Belt, number>();
+    for (const s of seen) {
+      if (s.hidden) continue;
+      const e = w.entityAt(Math.floor(s.x / TILE), Math.floor(s.y / TILE));
+      if (e?.kind === 'belt') tally.set(e, (tally.get(e) ?? 0) | (s.stopped ? 1 : 2));
+    }
+    for (const e of w.entities.values()) {
+      if (e.kind !== 'belt') continue;
+      if (e.items.length) this.cargo.set(e, e.items[e.items.length - 1].item);
+      if (tally.get(e) === 1) this.still.set(e, (this.still.get(e) ?? 0) + dt);
+      else this.still.delete(e);
+    }
+    for (const m of [this.cargo, this.still]) for (const b of m.keys()) if (w.entities.get(b.id) !== b) m.delete(b);
+    for (const b of this.frozen.keys()) if (!this.still.has(b)) this.frozen.delete(b);
+    // Belts some grabber picks from: goods waiting there are a buffer, not a dead end.
+    const picked = new Set<Entity>();
+    for (const e of w.entities.values()) {
+      if (e.kind !== 'inserter') continue;
+      const src = w.entityAt(e.x - DX[e.dir], e.y - DY[e.dir]);
+      if (src) picked.add(src);
+    }
+    const isHead = new Set(heads);
+    for (const b of heads) if (!this.jams.has(b)) this.jams.set(b, { beacon: 0, dead: false });
+    for (const [b, j] of this.jams) {
+      const on = isHead.has(b) && w.entities.has(b.id);
+      if (on) {
+        const ahead = w.entityAt(b.x + DX[b.dir], b.y + DY[b.dir]);
+        // Waiting on a grabber or a merge is a buffer; facing nothing (or a belt running back
+        // at it, or a full crate) is a dead end.
+        const merges = ahead?.kind === 'belt' && ahead.dir !== (b.dir + 2) % 4;
+        j.dead = !picked.has(b) && !merges;
+      }
+      j.beacon = Math.min(1, Math.max(0, j.beacon + ((on ? 1 : -1) * dt) / BEACON_TIME));
+      if (!on && j.beacon <= 0) this.jams.delete(b);
+    }
   }
 
   update(w: World, dt: number) {
@@ -285,7 +386,7 @@ export class ItemFlow {
       this.held.set(e.id, e.held);
     }
 
-    const now = this.layout(w);
+    const { seen: now, heads } = this.layout(w);
     // Tiles a grabber picks from or drops onto: goods there draw above the arm, so the claw never
     // hides what it is about to take or has just set down.
     const handTiles = new Set<number>();
@@ -298,6 +399,8 @@ export class ItemFlow {
     // delta is smoothed and clamped, and a slow frame would otherwise read as a jump.
     const ticks = this.tick < 0 ? 1 : Math.max(0, w.tick - this.tick);
     this.tick = w.tick;
+    // Backups are timed in sim time too, so they track the factory, not the frame rate.
+    this.trackJams(w, now, heads, Math.min(ticks, 60) * SIM_STEP);
     const hop = TRAVEL * ticks + 2;
     const fresh: Seen[] = [];
     const live = new Map<BeltItem, Seen>();

@@ -5,7 +5,7 @@ import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/wor
 import { Hud } from './hud';
 import { Fx, launchPod, machineView, makeMachines, type View } from './machines';
 import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, makePod, makeSite } from './site';
-import { BELT_ATLAS, SIM_STEP, beltClock, beltShapeKey, makeBelts } from './belts';
+import { BELT_ATLAS, CARGO_PAINT, FEED_SHIFT, IDLE_PAINT, SIM_STEP, beltClock, beltShapeKey, makeBelts } from './belts';
 import { ItemFlow } from './flow';
 import { makeItems } from './items';
 import { TILE, makeShared } from './textures';
@@ -358,23 +358,67 @@ export class FactoryScene extends Phaser.Scene {
         // Ground shadow, the tread, and end rollers wherever the run starts or stops.
         const shadow = this.add.image(cx + 3, cy + 5, BELT_ATLAS, 'sh-s0').setDepth(1.9).setAlpha(0.34);
         const img = this.add.image(cx, cy, BELT_ATLAS, 's0-0').setDepth(2);
+        const arrows = this.add.image(cx, cy, BELT_ATLAS, 'vs0-0').setDepth(2.01);
         const capBack = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.05);
         const capFront = this.add.image(cx, cy, BELT_ATLAS, 'cap-0').setDepth(2.06);
         const inlets = [1, 3].map(() => this.add.image(cx, cy, BELT_ATLAS, 'inlet-0').setDepth(2.07).setVisible(false));
+        const feed = this.add.image(cx, cy, BELT_ATLAS, 'feed-0').setDepth(2.04).setVisible(false);
+        const glow = this.add.image(cx, cy, 'glow').setDepth(3.38).setBlendMode(Phaser.BlendModes.ADD).setVisible(false);
+        const beacon = this.add.image(cx, cy, BELT_ATLAS, 'beacon-wait').setDepth(3.4).setVisible(false);
+        const alert = this.add.image(cx, cy, BELT_ATLAS, 'jam-alert').setDepth(9.8).setVisible(false);
         return {
-          parts: [shadow, img, capBack, capFront, ...inlets],
+          parts: [shadow, img, arrows, capBack, capFront, ...inlets, feed, glow, beacon, alert],
           update: (e, time) => {
             const b = e as Belt;
             const w = this.world;
-            const f = beltClock(w).frame;
+            // A belt holding nothing but a standing queue stops its tread.
+            const f = this.flow.beltFrame(b, beltClock(w).frame);
             const c = w.isCurve(b);
             const key = beltShapeKey(b.dir, c.curve, c.from);
             img.setFrame(`${key}-${f}`);
+            // Chevrons painted in the colour of the cargo this stretch carries.
+            const cargo = this.flow.cargoOf(b);
+            arrows.setFrame(`v${key}-${f}`).setTint(cargo ? CARGO_PAINT[cargo] : IDLE_PAINT).setAlpha(cargo ? 0.62 : 0.4);
             if (shadow.frame.name !== `sh-${key}`) shadow.setFrame(`sh-${key}`);
             const next = w.entityAt(b.x + DX[b.dir], b.y + DY[b.dir]);
-            const open = !(next?.kind === 'belt' && next.dir !== (b.dir + 2) % 4);
+            // Into a crate or the elevator the run dives under the housing; anywhere else that
+            // is not a belt carrying on, it stops at an end roller.
+            const sink = next?.kind === 'chest' || next?.kind === 'elevator';
+            feed.setVisible(sink);
+            if (sink) feed.setFrame(`feed-${b.dir}`).setPosition(cx + DX[b.dir] * FEED_SHIFT, cy + DY[b.dir] * FEED_SHIFT);
+            const open = !sink && !(next?.kind === 'belt' && next.dir !== (b.dir + 2) % 4);
             capFront.setVisible(open);
             if (open) capFront.setFrame(`cap-${b.dir}`);
+            // Where a queue is stuck: an amber beacon on the end plate where it waits on a grabber
+            // or a merge, a flashing red warning sign over a dead end nobody takes from.
+            const jam = this.flow.jamAt(b);
+            const lit = jam ? jam.beacon : 0;
+            const dead = !!jam && jam.dead;
+            beacon.setVisible(lit > 0 && !dead);
+            alert.setVisible(lit > 0 && dead);
+            glow.setVisible(lit > 0);
+            if (jam && lit > 0) {
+              const ex = cx + DX[b.dir] * (TILE / 2 - 6);
+              const ey = cy + DY[b.dir] * (TILE / 2 - 6);
+              // Warnings keep a readable size on screen when the whole site is zoomed out to fit.
+              const zoomOut = Math.max(1, 0.75 / this.cameras.main.zoom);
+              if (dead) {
+                const flash = Math.sin(time / 150) > -0.35 ? 1 : 0.4;
+                const bob = Math.sin(time / 260) * 1.5;
+                const pop = 0.6 + 0.4 * Math.min(1, lit * 1.4) + (flash === 1 ? 0.06 : 0);
+                alert.setPosition(ex, ey - 12 - 18 * zoomOut + bob).setAlpha(Math.min(1, lit * 1.5)).setScale(pop * zoomOut);
+                glow.setPosition(ex, ey).setTint(0xff3b22).setScale(0.7, 0.55).setAlpha(lit * (0.45 + 0.4 * flash));
+              } else {
+                // On the end plate beside the exit, on whichever side is clear of neighbours.
+                const lx = DY[b.dir];
+                const ly = -DX[b.dir];
+                const side = w.entityAt(b.x + lx, b.y + ly) && !w.entityAt(b.x - lx, b.y - ly) ? -1 : 1;
+                const bx = ex + lx * side * 25.5;
+                const by = ey + ly * side * 25.5;
+                beacon.setPosition(bx, by).setAlpha(Math.min(1, lit * 2)).setScale((1 + 0.2 * lit) * Math.sqrt(zoomOut));
+                glow.setPosition(bx, by).setTint(0xffa21e).setScale(0.5).setAlpha(lit * (0.55 + 0.15 * Math.sin(time / 420)));
+              }
+            }
             const back = ((b.dir + 2) % 4) as Dir;
             const tail = !c.curve && !w.beltFeedsInto(w.entityAt(b.x + DX[back], b.y + DY[back]), b);
             capBack.setVisible(tail);

@@ -3,7 +3,7 @@
 // hatching on the far side. All frames live in one atlas so a whole factory's belts batch together.
 
 import Phaser from 'phaser';
-import { BELT_SPEED } from '../sim/defs';
+import { BELT_SPEED, type ItemId } from '../sim/defs';
 import { DX, DY, type Dir, type World } from '../sim/world';
 import { INK, PALETTE, TILE, canvas, css, type Ctx } from './textures';
 import { mulberry32 } from '../sim/rng';
@@ -12,6 +12,24 @@ export const BELT_FRAMES = 16;
 /** Tread travel over one animation loop, in pixels: one slat pair with its chevron. */
 export const BELT_PERIOD = 32;
 export const BELT_ATLAS = 'belts';
+/**
+ * Chevron paint per cargo: once goods have run over a stretch its arrows take their colour, so
+ * each line reads as the line of one product even between pieces. Bright, light tints of each
+ * good's own colour (dark carbon shows as pale ash); unused belts keep hazard yellow.
+ */
+export const CARGO_PAINT: Record<ItemId, number> = {
+  'ferrite-ore': 0xff7a45,
+  'cuprite-ore': 0x45e0c4,
+  carbon: 0xc4bccf,
+  silica: 0xeef8ff,
+  'ferrite-bar': 0x9cc8f2,
+  'cuprite-bar': 0x6cf2dc,
+  glass: 0xb4ecff,
+  gear: 0xffc93a,
+  wire: 0x3fd8b8,
+  circuit: 0x96e650,
+};
+export const IDLE_PAINT = PALETTE.hazard;
 /** Simulation step the scene runs the world at (seconds). */
 export const SIM_STEP = 1 / 60;
 /**
@@ -34,6 +52,8 @@ export function beltClock(w: World): { frame: number; slot: number } {
 const PAD = 2; // extruded border around tiling cells so bilinear filtering never shows seams
 const CELL = TILE + PAD * 2;
 const CAP = 80; // end-cap frames hang a little past the tile edge
+/** Feed-lip frames are centred this far past the belt tile's centre, toward the receiver. */
+export const FEED_SHIFT = 20;
 const H = TILE / 2;
 const BED = 20; // half width of the rubber
 const RAIL = 25.5; // rail centre line
@@ -213,10 +233,10 @@ function slat(ctx: Ctx, path: Path, s: number, half: number) {
   }
 }
 
-function chevron(ctx: Ctx, path: Path, s: number) {
+function chevron(ctx: Ctx, path: Path, s: number, paint: string) {
   // Sharper than a right angle so it still reads as an arrow when a curve turns it diagonal.
-  // Worn stencil paint, knocked well back: the arrows mark the slots and the direction on an
-  // empty belt but never compete with the goods riding over them.
+  // Worn stencil paint, kept light: the arrows mark the slots, the direction and (tinted by the
+  // scene) the cargo of an empty run, but never compete with the goods riding over them.
   const tip = path.at(s + 3.5);
   const mid = path.at(s - 4);
   const [tx, ty] = off(tip, 0);
@@ -228,10 +248,10 @@ function chevron(ctx: Ctx, path: Path, s: number) {
   ctx.moveTo(lx, ly);
   ctx.lineTo(tx, ty);
   ctx.lineTo(rx, ry);
-  ctx.strokeStyle = 'rgba(20,12,14,0.35)';
-  ctx.lineWidth = 4.6;
+  ctx.strokeStyle = 'rgba(20,12,14,0.5)';
+  ctx.lineWidth = 4.8;
   ctx.stroke();
-  ctx.strokeStyle = css(PALETTE.hazard, -0.12, 0.4);
+  ctx.strokeStyle = paint;
   ctx.lineWidth = 2.2;
   ctx.stroke();
 }
@@ -250,8 +270,12 @@ function rivet(ctx: Ctx, x: number, y: number, r = 2.3) {
   ctx.fill();
 }
 
-/** One belt frame: rubber, moving slats and chevrons, shading, then the fixed steel side rails. */
-function drawBelt(ctx: Ctx, path: Path, phase: number, seed: number) {
+/**
+ * One belt frame: rubber, moving slats and chevrons, shading, then the fixed steel side rails.
+ * `paint` is the chevron colour; null leaves the chevrons out (the scene lays them on as a
+ * separate, cargo-tinted layer).
+ */
+function drawBelt(ctx: Ctx, path: Path, phase: number, seed: number, paint: string | null = css(PALETTE.hazard, -0.12, 0.4)) {
   const q = path.len / TILE;
   strokeRibbon(ctx, path, 0, OUTER * 2, INK);
   strokeRibbon(ctx, path, 0, BED * 2, RUBBER);
@@ -259,7 +283,7 @@ function drawBelt(ctx: Ctx, path: Path, phase: number, seed: number) {
   const shift = phase * BELT_PERIOD * q;
   const sp = 16 * q;
   for (let k = -2; k * sp < path.len + sp * 2; k++) slat(ctx, path, k * sp + shift, 3 * q);
-  for (let k = -2; k * sp < path.len + sp * 2; k += 2) chevron(ctx, path, k * sp + shift + sp / 2);
+  if (paint) for (let k = -2; k * sp < path.len + sp * 2; k += 2) chevron(ctx, path, k * sp + shift + sp / 2, paint);
   // Ambient occlusion along both rails, and a hatched cast shadow under the rail nearer the light.
   for (const side of [-1, 1]) {
     strokeRibbon(ctx, path, side * (BED - 1.5), 3, 'rgba(16,10,10,0.55)');
@@ -555,6 +579,238 @@ export function drawInlet(ctx: Ctx, cx: number, cy: number, e: Dir) {
   ctx.restore();
 }
 
+/**
+ * Jam beacon: a squat bolted lamp on the rail at the head of a stuck queue. `color` is the lens;
+ * red marks a dead end, amber a queue waiting on whatever takes from it.
+ */
+function drawBeacon(ctx: Ctx, cx: number, cy: number, color: number) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  // Ground shadow, base plate (a hex nut-like collar), then the cel-shaded dome.
+  ctx.fillStyle = 'rgba(28,14,8,0.4)';
+  ctx.beginPath();
+  ctx.arc(2, 3, 8.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+    const r = 8.6;
+    if (i) ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    else ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  ctx.closePath();
+  ctx.fillStyle = css(PALETTE.steel, -0.25);
+  ctx.fill();
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, 6, 0, Math.PI * 2);
+  ctx.fillStyle = css(color, -0.45);
+  ctx.fill();
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = css(color, 0);
+  ctx.beginPath();
+  ctx.arc(-1.2, -1.4, 5.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = css(color, 0.45);
+  ctx.beginPath();
+  ctx.arc(-2, -2.4, 2.8, 0, Math.PI * 2);
+  ctx.fill();
+  // Lens cage bars, inked.
+  ctx.strokeStyle = 'rgba(28,20,17,0.75)';
+  ctx.lineWidth = 1.1;
+  for (const x of [-2.2, 2.2]) {
+    ctx.beginPath();
+    ctx.moveTo(x, -7);
+    ctx.lineTo(x, 7);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.beginPath();
+  ctx.arc(0, 0, 6, 0, Math.PI * 2);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.beginPath();
+  ctx.ellipse(-2.4, -2.8, 1.6, 1.1, -0.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * Dead-end alert: an inked warning sign that hangs over the head of a queue nobody takes from.
+ * Red triangle, cream rim, a fat ink "!" with its own cast shadow, cel-shaded and scuffed.
+ */
+function drawAlert(ctx: Ctx, cx: number, cy: number) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  const tri = (r: number, dx = 0, dy = 0) => {
+    ctx.beginPath();
+    const pts: [number, number][] = [
+      [0, -r * 1.02],
+      [r * 1.1, r * 0.78],
+      [-r * 1.1, r * 0.78],
+    ];
+    ctx.moveTo(pts[0][0] + dx, pts[0][1] + dy);
+    ctx.lineTo(pts[1][0] + dx, pts[1][1] + dy);
+    ctx.lineTo(pts[2][0] + dx, pts[2][1] + dy);
+    ctx.closePath();
+  };
+  ctx.lineJoin = 'round';
+  // Hard comic drop shadow.
+  tri(13, 2.5, 3);
+  ctx.fillStyle = 'rgba(20,12,10,0.55)';
+  ctx.fill();
+  tri(13);
+  ctx.fillStyle = INK;
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = INK;
+  ctx.stroke();
+  ctx.fill();
+  tri(11);
+  ctx.fillStyle = '#f4e3c1';
+  ctx.fill();
+  tri(8.4);
+  ctx.fillStyle = '#e2381f';
+  ctx.fill();
+  // Shadow half: a darker red with hatching.
+  ctx.save();
+  tri(8.4);
+  ctx.clip();
+  ctx.fillStyle = '#a3200f';
+  ctx.beginPath();
+  ctx.moveTo(1, -10);
+  ctx.lineTo(12, 8);
+  ctx.lineTo(-2, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(30,8,6,0.45)';
+  ctx.lineWidth = 0.9;
+  for (let i = -6; i < 16; i += 2.4) {
+    ctx.beginPath();
+    ctx.moveTo(i, -10);
+    ctx.lineTo(i + 10, 10);
+    ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(255,190,160,0.8)';
+  ctx.beginPath();
+  ctx.moveTo(-1.2, -6.5);
+  ctx.lineTo(-6.8, 4);
+  ctx.lineTo(-4.8, 4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  // The "!".
+  const bang = (dx: number, dy: number, color: string) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(-2 + dx, -4.6 + dy);
+    ctx.lineTo(2 + dx, -4.6 + dy);
+    ctx.lineTo(1.1 + dx, 2 + dy);
+    ctx.lineTo(-1.1 + dx, 2 + dy);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(dx, 4.6 + dy, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  bang(0.9, 0.9, INK);
+  bang(0, 0, '#fff4dc');
+  ctx.restore();
+}
+
+/**
+ * Feed lip where a run hands its goods to a crate or the elevator: instead of an end roller the
+ * rails carry on past the tile edge and the rubber slides onto a bolted comb plate that tips the
+ * goods in under the housing. `e` points from the tile centre (cx, cy) toward the receiver.
+ */
+function drawFeed(ctx: Ctx, cx: number, cy: number, e: Dir) {
+  const ux = DX[e];
+  const uy = DY[e];
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(Math.atan2(uy, ux) - Math.PI / 2);
+  const L = { x: LX * uy - LY * ux, y: LX * ux + LY * uy };
+  const Y0 = H - 3;
+  const Y1 = H + 17;
+  const sx = 3 * uy - 5 * ux;
+  const sy = 3 * ux + 5 * uy;
+  // Ground shadow, then the ink body: one rounded slab carrying the rails and the plate.
+  ctx.fillStyle = 'rgba(28,14,8,0.32)';
+  ctx.beginPath();
+  ctx.roundRect(-OUTER + sx, Y0 + sy, OUTER * 2, Y1 - Y0, [0, 0, 6, 6]);
+  ctx.fill();
+  ctx.fillStyle = INK;
+  ctx.beginPath();
+  ctx.roundRect(-OUTER, Y0, OUTER * 2, Y1 - Y0, [0, 0, 6, 6]);
+  ctx.fill();
+  // Rubber running out to the plate.
+  ctx.fillStyle = RUBBER;
+  ctx.fillRect(-BED, Y0, BED * 2, 8);
+  // Comb plate: steel, lit along the edge facing the light, toothed where the rubber meets it.
+  const PY = Y0 + 8;
+  ctx.fillStyle = css(PALETTE.steel, -0.12);
+  ctx.fillRect(-BED, PY, BED * 2, Y1 - PY - 2.5);
+  ctx.fillStyle = L.y < 0 ? css(PALETTE.steel, 0.5) : css(PALETTE.steel, -0.45);
+  ctx.fillRect(-BED, Y1 - 5, BED * 2, 2);
+  ctx.fillStyle = css(PALETTE.steel, -0.12);
+  for (let x = -BED + 1; x < BED - 1; x += 4) ctx.fillRect(x, PY - 2.5, 2.2, 3);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(-BED, PY + 0.5);
+  ctx.lineTo(BED, PY + 0.5);
+  ctx.stroke();
+  // Hatched slope where the plate tips down under the housing.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-BED, PY + 1, BED * 2, Y1 - PY - 7);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(16,10,10,0.45)';
+  ctx.lineWidth = 1;
+  for (let i = -BED - 20; i < BED; i += 3) {
+    ctx.beginPath();
+    ctx.moveTo(i, PY);
+    ctx.lineTo(i + 12, Y1);
+    ctx.stroke();
+  }
+  ctx.restore();
+  rivet(ctx, -BED + 6, Y1 - 8, 1.8);
+  rivet(ctx, BED - 6, Y1 - 8, 1.8);
+  // Rails run on to rounded, bolted ends.
+  for (const side of [-1, 1]) {
+    const o = side * RAIL;
+    ctx.beginPath();
+    ctx.roundRect(o - RAIL_W / 2, Y0 - 2, RAIL_W, Y1 - Y0 - 1, [0, 0, 4, 4]);
+    ctx.fillStyle = css(PALETTE.steel, -0.08);
+    ctx.fill();
+    ctx.fillStyle = side * L.x < 0 ? css(PALETTE.steel, 0.5) : 'rgba(16,10,10,0.6)';
+    ctx.fillRect(o + side * 2.2 - 0.9, Y0 - 2, 1.8, Y1 - Y0 - 4);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.roundRect(o - RAIL_W / 2, Y0 - 2, RAIL_W, Y1 - Y0 - 1, [0, 0, 4, 4]);
+    ctx.stroke();
+    rivet(ctx, o, Y1 - 7, 2);
+  }
+  // Outline the sides and the nose only: the open end joins the belt seamlessly.
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-OUTER, Y0 - 2);
+  ctx.lineTo(-OUTER, Y1 - 6);
+  ctx.arcTo(-OUTER, Y1, -OUTER + 6, Y1, 6);
+  ctx.lineTo(OUTER - 6, Y1);
+  ctx.arcTo(OUTER, Y1, OUTER, Y1 - 6, 6);
+  ctx.lineTo(OUTER, Y0 - 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 export interface BeltShape {
   key: string;
   path: (ox: number, oy: number) => Path;
@@ -589,9 +845,10 @@ function extrude(ctx: Ctx, x: number, y: number) {
  */
 export function makeBelts(scene: Phaser.Scene) {
   const list = shapes();
-  const W = CELL * BELT_FRAMES;
+  const W = Math.max(CELL * BELT_FRAMES, CAP * 12 + 64);
   const rowsY = CELL * list.length;
-  const [ctx, tex] = canvas(scene, BELT_ATLAS, W, rowsY + CELL + CAP);
+  const chevY = rowsY + CELL + CAP;
+  const [ctx, tex] = canvas(scene, BELT_ATLAS, W, chevY + rowsY);
   list.forEach((sh, row) => {
     for (let f = 0; f < BELT_FRAMES; f++) {
       const x = f * CELL;
@@ -600,10 +857,22 @@ export function makeBelts(scene: Phaser.Scene) {
       ctx.beginPath();
       ctx.rect(x + PAD, y + PAD, TILE, TILE);
       ctx.clip();
-      drawBelt(ctx, sh.path(x + PAD + H, y + PAD + H), f / BELT_FRAMES, 11 + row * 7);
+      drawBelt(ctx, sh.path(x + PAD + H, y + PAD + H), f / BELT_FRAMES, 11 + row * 7, null);
       ctx.restore();
       extrude(ctx, x, y);
       tex.add(`${sh.key}-${f}`, 0, x + PAD, y + PAD, TILE, TILE);
+      // The chevrons alone, painted white so the scene can tint them with the run's cargo.
+      const cy = chevY + row * CELL;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + PAD, cy + PAD, TILE, TILE);
+      ctx.clip();
+      const path = sh.path(x + PAD + H, cy + PAD + H);
+      const q = path.len / TILE;
+      for (let k = -2; k * 16 * q < path.len + 32 * q; k += 2) chevron(ctx, path, k * 16 * q + (f / BELT_FRAMES) * BELT_PERIOD * q + 8 * q, '#ffffff');
+      ctx.restore();
+      extrude(ctx, x, cy);
+      tex.add(`v${sh.key}-${f}`, 0, x + PAD, cy + PAD, TILE, TILE);
     }
     // Ground shadow: the belt silhouette in flat dark, offset by the caller.
     const x = row * CELL;
@@ -622,6 +891,24 @@ export function makeBelts(scene: Phaser.Scene) {
     tex.add(`cap-${e}`, 0, e * CAP, y, CAP, CAP);
     drawInlet(ctx, (e + 4) * CAP + CAP / 2, y + CAP / 2, e as Dir);
     tex.add(`inlet-${e}`, 0, (e + 4) * CAP, y, CAP, CAP);
+    // Feed lips sit in the free space after the caps and inlets: four 80-wide cells.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect((e + 8) * CAP, y, CAP, CAP);
+    ctx.clip();
+    drawFeed(ctx, (e + 8) * CAP + CAP / 2 - DX[e] * FEED_SHIFT, y + CAP / 2 - DY[e] * FEED_SHIFT, e as Dir);
+    ctx.restore();
+    tex.add(`feed-${e}`, 0, (e + 8) * CAP, y, CAP, CAP);
+  }
+  {
+    const y = rowsY + CELL;
+    const x = 12 * CAP;
+    drawBeacon(ctx, x + 16, y + 16, 0xff3b22);
+    tex.add('beacon-dead', 0, x, y, 32, 32);
+    drawBeacon(ctx, x + 48, y + 16, 0xffb21e);
+    tex.add('beacon-wait', 0, x + 32, y, 32, 32);
+    drawAlert(ctx, x + 20, y + 32 + 18);
+    tex.add('jam-alert', 0, x, y + 32, 40, 40);
   }
   tex.refresh();
 
