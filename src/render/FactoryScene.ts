@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import type { Campaign, CampaignEvent } from '../sim/campaign';
 import { BUILDINGS, type BuildingKind, type ItemId } from '../sim/defs';
 import { DX, DY, type Belt, type Dir, type Entity, type World } from '../sim/world';
+import { BuildCursor, BuildJuice, makeBuildArt } from './build';
 import { Hud } from './hud';
 import { Fx, launchPod, machineView, makeMachines, type View } from './machines';
 import { CABLE_W, CLIFF_FIT, SITE_PAD, makeAcidBubble, makeBackdrop, makeCable, makePod, makeSite } from './site';
@@ -25,13 +26,13 @@ export class FactoryScene extends Phaser.Scene {
   private acc = 0;
   private lastNow = 0;
   private views = new Map<number, View>();
+  /** Footprint of each view's entity, kept so a removed building's view can animate out in place. */
+  private removedAt = new Map<number, { x: number; y: number; size: number }>();
   private siteLayer: Phaser.GameObjects.GameObject[] = [];
   private flow!: ItemFlow;
   private backdrop!: Phaser.GameObjects.Image;
-  private ghost!: Phaser.GameObjects.Image;
-  private ghostArrow!: Phaser.GameObjects.Image;
-  private cursor!: Phaser.GameObjects.Rectangle;
-  private selBox!: Phaser.GameObjects.Rectangle;
+  private cursor!: BuildCursor;
+  private juice!: BuildJuice;
   private vignette!: Phaser.GameObjects.Image;
   private grid!: Phaser.GameObjects.Image;
   private cable!: Phaser.GameObjects.TileSprite;
@@ -40,6 +41,8 @@ export class FactoryScene extends Phaser.Scene {
   private cableGlow!: Phaser.GameObjects.Image;
   private hover = { x: -1, y: -1 };
   private dragLast: { x: number; y: number } | null = null;
+  /** Right button held without a tool: sweeping buildings away. */
+  private scrapping = false;
   private panning: { x: number; y: number; sx: number; sy: number } | null = null;
   private fitZoom = 1;
   private shownSite = '';
@@ -63,6 +66,8 @@ export class FactoryScene extends Phaser.Scene {
     makeBelts(this);
     makeMachines(this);
     this.fx = new Fx(this);
+    makeBuildArt(this);
+    this.juice = new BuildJuice(this, this.fx);
     this.flow = new ItemFlow(this, (b, pos, c) => this.beltItemPos(b, pos, c));
     makeBackdrop(this);
     makeCable(this);
@@ -71,10 +76,7 @@ export class FactoryScene extends Phaser.Scene {
     this.backdrop = this.add.image(0, 0, 'backdrop').setScrollFactor(0).setDepth(-10);
     this.vignette = this.add.image(0, 0, 'vignette').setScrollFactor(0).setDepth(40);
     this.grid = this.add.image(0, 0, 'px').setOrigin(0).setDepth(1).setAlpha(0);
-    this.ghost = this.add.image(0, 0, 'px').setDepth(50).setAlpha(0.6).setVisible(false);
-    this.ghostArrow = this.add.image(0, 0, 'arrow').setDepth(51).setVisible(false);
-    this.cursor = this.add.rectangle(0, 0, TILE, TILE).setStrokeStyle(3, 0xf2b632, 0.95).setDepth(49).setVisible(false);
-    this.selBox = this.add.rectangle(0, 0, TILE, TILE).setStrokeStyle(4, 0x4fd1bd, 1).setDepth(49).setVisible(false);
+    this.cursor = new BuildCursor(this);
     this.cableGlow = this.add.image(0, 0, 'fire').setDepth(7.9).setBlendMode(Phaser.BlendModes.ADD).setTint(0x4fd1bd);
     this.cable = this.add.tileSprite(0, 0, CABLE_W, 3200, 'cable').setOrigin(0.5, 1).setDepth(8);
     this.cablePulse = this.add.tileSprite(0, 0, CABLE_W, 3200, 'cable-pulse').setOrigin(0.5, 1).setDepth(8.1).setBlendMode(Phaser.BlendModes.ADD);
@@ -89,6 +91,7 @@ export class FactoryScene extends Phaser.Scene {
     this.input.on('pointerup', () => {
       this.dragLast = null;
       this.panning = null;
+      this.scrapping = false;
     });
     this.input.on('wheel', (p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
       const cam = this.cameras.main;
@@ -107,6 +110,8 @@ export class FactoryScene extends Phaser.Scene {
     if (!this.campaign.select(id)) return;
     for (const v of this.views.values()) v.parts.forEach((p) => p.destroy());
     this.views.clear();
+    this.removedAt.clear();
+    this.juice.reset();
     this.siteLayer.forEach((o) => o.destroy());
     this.siteLayer = [];
     this.select(null);
@@ -174,22 +179,34 @@ export class FactoryScene extends Phaser.Scene {
       cam.scrollY = this.panning.sy - (p.y - this.panning.y) / cam.zoom;
       return;
     }
-    if (p.rightButtonDown()) this.world.remove(this.hover.x, this.hover.y);
+    if (p.rightButtonDown() && this.scrapping) this.scrapAt(this.hover.x, this.hover.y);
     else if (p.leftButtonDown() && this.tool && this.dragLast) {
+      // Walk every tile between the last one and the pointer, so a fast drag leaves no gaps.
       const t = this.hover;
-      if (t.x !== this.dragLast.x || t.y !== this.dragLast.y) {
+      let last: { x: number; y: number } = this.dragLast;
+      let guard = 64;
+      while ((t.x !== last.x || t.y !== last.y) && guard-- > 0) {
+        const ax: number = t.x - last.x;
+        const ay: number = t.y - last.y;
+        // Keep going the way the line already runs while that still closes in, then turn once:
+        // a jump of several tiles lays a clean L instead of a staircase.
+        const along = Math.sign(ax) === DX[this.toolDir] && ax !== 0 ? true : Math.sign(ay) === DY[this.toolDir] && ay !== 0 ? false : null;
+        const horiz: boolean = this.tool === 'belt' && along !== null ? along : Math.abs(ax) >= Math.abs(ay);
+        const next: { x: number; y: number } = horiz ? { x: last.x + Math.sign(ax), y: last.y } : { x: last.x, y: last.y + Math.sign(ay) };
         if (this.tool === 'belt') {
-          const dx = Math.sign(t.x - this.dragLast.x);
-          const dy = Math.sign(t.y - this.dragLast.y);
-          const dir: Dir = dx > 0 ? 1 : dx < 0 ? 3 : dy > 0 ? 2 : 0;
+          const dir: Dir = next.x > last.x ? 1 : next.x < last.x ? 3 : next.y > last.y ? 2 : 0;
           // Turn the previous belt toward the new one so dragged lines connect.
-          const prev = this.world.entityAt(this.dragLast.x, this.dragLast.y);
-          if (prev?.kind === 'belt' && (dx === 0 || dy === 0)) prev.dir = dir;
+          const prev = this.world.entityAt(last.x, last.y);
+          if (prev?.kind === 'belt' && prev.dir !== dir) {
+            prev.dir = dir;
+            this.juice.turned(prev);
+          }
           this.toolDir = dir;
         }
-        this.tryPlace(t);
-        this.dragLast = { ...t };
+        this.tryPlace(next, true);
+        last = next;
       }
+      this.dragLast = last;
     }
   }
 
@@ -198,7 +215,10 @@ export class FactoryScene extends Phaser.Scene {
     const t = this.tileAt(p);
     if (p.rightButtonDown()) {
       if (this.tool) this.setTool(null);
-      else this.world.remove(t.x, t.y);
+      else {
+        this.scrapping = true;
+        this.scrapAt(t.x, t.y);
+      }
       return;
     }
     if (p.middleButtonDown() || (!this.tool && !this.world.entityAt(t.x, t.y))) {
@@ -213,22 +233,40 @@ export class FactoryScene extends Phaser.Scene {
     } else this.select(this.world.entityAt(t.x, t.y) ?? null);
   }
 
-  private tryPlace(t: { x: number; y: number }) {
+  private tryPlace(t: { x: number; y: number }, dragging = false) {
     if (!this.tool) return;
     const o = this.placeOrigin(t, this.tool);
     const existing = this.world.entityAt(t.x, t.y);
     if (existing?.kind === 'belt' && this.tool === 'belt') {
-      existing.dir = this.toolDir;
+      if (existing.dir !== this.toolDir) {
+        existing.dir = this.toolDir;
+        this.juice.turned(existing);
+      }
       return;
     }
-    this.world.place(this.tool, o.x, o.y, this.toolDir);
+    const e = this.world.place(this.tool, o.x, o.y, this.toolDir);
+    if (e) {
+      this.juice.placed(e);
+      this.cursor.placed();
+    } else if (!dragging) this.cursor.deny();
+  }
+
+  /** Take apart the building on a tile, with a scrap burst. */
+  private scrapAt(x: number, y: number) {
+    const e = this.world.remove(x, y);
+    if (e) this.juice.scrap(e);
   }
 
   private onKey(ev: KeyboardEvent) {
     const k = ev.key.toLowerCase();
     if (k === 'r') {
       if (this.tool) this.toolDir = ((this.toolDir + (ev.shiftKey ? 3 : 1)) % 4) as Dir;
-      else this.world.rotate(this.hover.x, this.hover.y);
+      else {
+        const e = this.world.entityAt(this.hover.x, this.hover.y);
+        const dir = e?.dir;
+        this.world.rotate(this.hover.x, this.hover.y);
+        if (e && e.dir !== dir) this.juice.turned(e);
+      }
     } else if (k === 'escape' || k === 'q') {
       if (k === 'q' && !this.tool) {
         const e = this.world.entityAt(this.hover.x, this.hover.y);
@@ -335,8 +373,11 @@ export class FactoryScene extends Phaser.Scene {
     const w = this.world;
     for (const [id, v] of this.views) {
       if (!w.entities.has(id)) {
-        v.parts.forEach((p) => p.destroy());
+        const at = this.removedAt.get(id);
+        if (at && this.juice.isScrapped(id)) this.juice.die(id, v, at);
+        else v.parts.forEach((p) => p.destroy());
         this.views.delete(id);
+        this.removedAt.delete(id);
         if (this.selected?.id === id) this.select(null);
       }
     }
@@ -345,9 +386,13 @@ export class FactoryScene extends Phaser.Scene {
       if (!v) {
         v = this.makeView(e);
         this.views.set(e.id, v);
+        this.removedAt.set(e.id, { x: e.x, y: e.y, size: e.size });
       }
+      this.juice.before(e.id, v);
       v.update(e, time);
+      this.juice.after(e.id, v);
     }
+    this.juice.tick();
   }
 
   private makeView(e: Entity): View {
@@ -482,44 +527,18 @@ export class FactoryScene extends Phaser.Scene {
   }
 
   private drawCursor() {
-    const t = this.hover;
-    const w = this.world;
-    if (this.selected) {
-      const s = this.selected;
-      this.selBox.setVisible(true).setSize(s.size * TILE, s.size * TILE).setOrigin(0.5).setPosition((s.x + s.size / 2) * TILE, (s.y + s.size / 2) * TILE);
-    } else this.selBox.setVisible(false);
-    if (!w.inBounds(t.x, t.y)) {
-      this.ghost.setVisible(false);
-      this.ghostArrow.setVisible(false);
-      this.cursor.setVisible(false);
-      return;
-    }
-    if (this.tool) {
-      const kind = this.tool;
-      const o = this.placeOrigin(t, kind);
-      const size = BUILDINGS[kind].size;
-      const cx = (o.x + size / 2) * TILE;
-      const cy = (o.y + size / 2) * TILE;
-      const key = kind === 'belt' ? 'belt-icon' : kind === 'inserter' ? 'inserter-icon' : kind;
-      const ok = w.canPlace(kind, o.x, o.y) || (kind === 'belt' && w.entityAt(t.x, t.y)?.kind === 'belt');
-      this.ghost.setVisible(true).setTexture(key).setPosition(cx, cy).setAngle(kind === 'belt' ? this.toolDir * 90 : 0);
-      this.ghost.setTint(ok ? 0x9cff9c : 0xff6a5a);
-      this.cursor.setVisible(false);
-      const rot = BUILDINGS[kind].rotatable;
-      this.ghostArrow.setVisible(rot).setAngle(this.toolDir * 90);
-      if (rot) {
-        if (kind === 'miner') {
-          const [ax, ay] = w.minerOutputTile({ id: 0, x: o.x, y: o.y, size, dir: this.toolDir });
-          this.ghostArrow.setPosition((ax + 0.5) * TILE, (ay + 0.5) * TILE);
-        } else this.ghostArrow.setPosition(cx + DX[this.toolDir] * 22, cy + DY[this.toolDir] * 22);
-      }
-    } else {
-      this.ghost.setVisible(false);
-      this.ghostArrow.setVisible(false);
-      const e = w.entityAt(t.x, t.y);
-      const [x, y, s] = e ? [e.x, e.y, e.size] : [t.x, t.y, 1];
-      this.cursor.setVisible(true).setSize(s * TILE, s * TILE).setOrigin(0.5).setPosition((x + s / 2) * TILE, (y + s / 2) * TILE);
-    }
+    this.cursor.update({
+      world: this.world,
+      tool: this.tool,
+      toolDir: this.toolDir,
+      hover: this.hover,
+      selected: this.selected,
+      scrapping: this.scrapping,
+      time: this.time.now,
+      dt: Math.min(0.1, this.game.loop.delta / 1000),
+      zoom: this.cameras.main.zoom,
+      viewTop: this.cameras.main.worldView.y + MARGIN.top / this.cameras.main.zoom,
+    });
   }
 }
 
